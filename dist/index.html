@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Expense Claim Statement Portal</title>
+  <meta name="description" content="Fill and download your company expense claim statement as Excel"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <script type="module" crossorigin src="./assets/index-B-DNHhWe.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-GgFxHBLc.css">
+</head>
+<body>
+  <!-- Animated background blobs -->
+  <div class="bg-blob blob1"></div>
+  <div class="bg-blob blob2"></div>
+  <div class="bg-blob blob3"></div>
+
+  <div class="app-wrapper">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-logo">
+        <div class="logo-icon">EXP</div>
+        <div class="header-text">
+          <h1>Expense Claim Portal</h1>
+          <p>Prepare and export your expense claims</p>
+        </div>
+      </div>
+      <button class="btn-download" id="downloadBtn" onclick="generateExcel()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download Excel
+      </button>
+    </header>
+
+    <!-- Billing Guidelines Banner -->
+    <div class="card info-banner-card">
+      <div class="info-banner-content">
+        <span class="info-banner-icon">💡</span>
+        <div class="info-banner-text">
+          <h3>Billing & Parsing Guidelines</h3>
+          <p>
+            This portal supports two parsing modes. 
+            <strong>Local Offline Mode (No API Key Required):</strong> If your bills are named with the amount (e.g. <code>zomato_345.pdf</code> or <code>uber_120.png</code>), details are parsed instantly offline. 
+            <strong>Gemini AI Mode (API Key Required):</strong> If filenames are generic (e.g. <code>zomato.pdf</code> or <code>invoice.png</code>), a Gemini API Key is required to read the bill contents using Gemini AI.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top Grid: Employee Info & AI Settings -->
+    <div class="top-cards-grid">
+      <!-- Employee Info Card -->
+      <div class="card employee-card">
+        <div class="card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Employee Information
+        </div>
+        <div class="employee-grid">
+          <div class="form-group">
+            <label for="empName">Employee Name</label>
+            <input type="text" id="empName" placeholder="Enter employee name"/>
+          </div>
+          <div class="form-group">
+            <label for="empId">Employee ID</label>
+            <input type="text" id="empId" placeholder="Enter employee ID"/>
+          </div>
+          <div class="form-group">
+            <label for="claimMonth">Claim Month</label>
+            <input type="month" id="claimMonth" />
+          </div>
+          <div class="form-group">
+            <label for="travelAdvance">Travel Advance Paid (₹)</label>
+            <input type="number" id="travelAdvance" min="0" step="0.01" placeholder="0.00"/>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Settings Card -->
+      <div class="card ai-card">
+        <div class="card-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          AI Parsing Settings
+        </div>
+        <div class="ai-grid">
+          <div class="form-group">
+            <label for="geminiApiKey">Gemini API Key</label>
+            <div class="api-key-input-wrapper">
+              <input type="password" id="geminiApiKey" placeholder="AIZAy..." autocomplete="off"/>
+              <button type="button" id="toggleApiKeyVisibility" class="btn-toggle-visibility" title="Show/Hide API Key">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <p class="input-help-text">Only required if filenames don't contain amounts (e.g. <code>zomato.pdf</code>)</p>
+            <button type="button" id="btnTestApiKey" class="btn-test-key">Test Connection</button>
+          </div>
+          <div class="form-group toggle-group">
+            <label class="switch-container">
+              <input type="checkbox" id="useAiParser" />
+              <span class="switch-slider"></span>
+              <span class="switch-label">Enable Gemini AI Parser</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Target Category Selector Card -->
+    <div class="card target-selector-card">
+      <div class="target-selector-flex">
+        <span class="target-label">Choose Category for Upload / Paste:</span>
+        <div class="category-select-wrapper">
+          <select id="uploadCategorySelect" onchange="switchTab(this.value)">
+            <option value="phoneBroadband" selected>📱 Phone & Broadband</option>
+            <option value="travel">🚗 Travel</option>
+            <option value="food">🍽️ Food</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input Methods (Drag & Drop Bill Files) -->
+    <div class="input-methods-grid">
+      <!-- Drag & Drop Zone -->
+      <div class="card upload-card" id="dropZone">
+        <div class="upload-zone" id="uploadZone">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="upload-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <div class="upload-text">
+            <div class="parser-status-badge offline-mode" id="parserStatusBadge">
+              <span class="status-dot"></span>
+              <span class="status-text">Mode: Local Offline Heuristics</span>
+            </div>
+            <h3>Drag & Drop Bill Files</h3>
+            <p>Or click to browse</p>
+            
+            <div class="upload-instructions">
+              <div class="instruction-item">
+                <span class="icon">⚡</span>
+                <span>If filenames contain amounts (e.g., <code>zomato_345.pdf</code>), parsing is <strong>instant & offline</strong> (No API Key required).</span>
+              </div>
+              <div class="instruction-item">
+                <span class="icon">🤖</span>
+                <span>If filenames are generic (e.g., <code>zomato.pdf</code>), you must enable the <strong>Gemini API Key</strong> to read the bill contents.</span>
+              </div>
+            </div>
+          </div>
+          <input type="file" id="fileInput" multiple style="display: none;" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div class="tabs-wrapper">
+      <div class="tabs">
+        <button class="tab active" id="tab-phoneBroadband" onclick="switchTab('phoneBroadband')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+          Phone & Broadband
+        </button>
+        <button class="tab" id="tab-travel" onclick="switchTab('travel')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Travel
+        </button>
+        <button class="tab" id="tab-food" onclick="switchTab('food')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 010 8h-1"/><path d="M2 8h16v9a4 4 0 01-4 4H6a4 4 0 01-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+          Food
+        </button>
+      </div>
+      <div class="tab-summary" id="tabSummary"></div>
+    </div>
+
+    <!-- Tab Panels -->
+    <div id="panel-phoneBroadband" class="tab-panel active">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/></svg>
+            Phone & Broadband Expenses
+          </div>
+          <button class="btn-add" onclick="addRow('phoneBroadband')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Row
+          </button>
+        </div>
+        <div class="table-wrapper">
+          <table id="table-phoneBroadband">
+            <thead>
+              <tr>
+                <th class="col-slno">Sl.No</th>
+                <th class="col-date">Date</th>
+                <th class="col-desc">Description</th>
+                <th class="col-amount">Amount (₹)</th>
+                <th class="col-bills">Bills Available</th>
+                <th class="col-action"></th>
+              </tr>
+            </thead>
+            <tbody id="body-phoneBroadband"></tbody>
+          </table>
+        </div>
+        <div class="table-footer" id="footer-phoneBroadband"></div>
+      </div>
+    </div>
+
+    <div id="panel-travel" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
+            Travel Expenses
+          </div>
+          <button class="btn-add" onclick="addRow('travel')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Row
+          </button>
+        </div>
+        <div class="table-wrapper">
+          <table id="table-travel">
+            <thead>
+              <tr>
+                <th class="col-slno">Sl.No</th>
+                <th class="col-date">Date</th>
+                <th class="col-desc">Description</th>
+                <th class="col-amount">Amount (₹)</th>
+                <th class="col-bills">Bills Available</th>
+                <th class="col-action"></th>
+              </tr>
+            </thead>
+            <tbody id="body-travel"></tbody>
+          </table>
+        </div>
+        <div class="table-footer" id="footer-travel"></div>
+      </div>
+    </div>
+
+    <div id="panel-food" class="tab-panel">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8h1a4 4 0 010 8h-1"/><path d="M2 8h16v9a4 4 0 01-4 4H6a4 4 0 01-4-4V8z"/></svg>
+            Food Expenses
+          </div>
+          <button class="btn-add" onclick="addRow('food')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Row
+          </button>
+        </div>
+        <div class="table-wrapper">
+          <table id="table-food">
+            <thead>
+              <tr>
+                <th class="col-slno">Sl.No</th>
+                <th class="col-date">Date</th>
+                <th class="col-desc">Description</th>
+                <th class="col-amount">Amount (₹)</th>
+                <th class="col-bills">Bills Available</th>
+                <th class="col-action"></th>
+              </tr>
+            </thead>
+            <tbody id="body-food"></tbody>
+          </table>
+        </div>
+        <div class="table-footer" id="footer-food"></div>
+      </div>
+    </div>
+
+    <!-- Grand Summary Card -->
+    <div class="card summary-card">
+      <div class="card-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+        Grand Summary
+      </div>
+      <div class="summary-grid">
+        <div class="summary-item">
+          <span class="summary-label">📱 Phone & Broadband</span>
+          <span class="summary-value" id="sum-phoneBroadband">₹0.00</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">🚗 Travel</span>
+          <span class="summary-value" id="sum-travel">₹0.00</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-label">🍽️ Food</span>
+          <span class="summary-value" id="sum-food">₹0.00</span>
+        </div>
+        <div class="summary-divider"></div>
+        <div class="summary-item total-row">
+          <span class="summary-label">Total Amount Payable</span>
+          <span class="summary-value" id="sum-total">₹0.00</span>
+        </div>
+        <div class="summary-item deduct-row">
+          <span class="summary-label">Less: Travel Advance Paid</span>
+          <span class="summary-value deduct" id="sum-advance">- ₹0.00</span>
+        </div>
+        <div class="summary-item net-row">
+          <span class="summary-label">Net Amount Payable</span>
+          <span class="summary-value net" id="sum-net">₹0.00</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- OCR/PDF Scanning Loader Overlay -->
+    <div class="ocr-overlay" id="ocrOverlay">
+      <div class="ocr-loader-card">
+        <div class="ocr-spinner"></div>
+        <h3>Reading Bill Contents</h3>
+        <p>Analyzing document layout and extracting amount / merchant info...</p>
+        <div class="ocr-progress-bar">
+          <div class="ocr-progress-fill" id="ocrProgressFill" style="width: 0%"></div>
+        </div>
+        <span class="ocr-status-text" id="ocrStatusText">Initializing document scanner...</span>
+      </div>
+    </div>
+
+    <!-- API Key Required Modal -->
+    <div class="ocr-overlay" id="apiKeyModal">
+      <div class="ocr-loader-card api-key-modal-card">
+        <div class="modal-icon-wrapper">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+        </div>
+        <h3>Gemini API Key Required</h3>
+        <p class="modal-desc">
+          The following file(s) require Gemini AI parsing because their filenames do not contain the amount (e.g., <code>zomato_345.pdf</code>):
+        </p>
+        <div class="modal-file-list" id="modalFileList">
+          <!-- Dynamically populated files -->
+        </div>
+        <p class="modal-instruction">
+          Please enter your Gemini API Key below to proceed, or cancel to rename your files:
+        </p>
+        <div class="form-group modal-api-group">
+          <div class="api-key-input-wrapper">
+            <input type="password" id="modalGeminiApiKey" placeholder="AIZAy..." autocomplete="off"/>
+            <button type="button" id="toggleModalApiKeyVisibility" class="btn-toggle-visibility" title="Show/Hide API Key">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="btnCancelModal" class="btn-secondary">Cancel Upload</button>
+          <button type="button" id="btnSaveModalKey" class="btn-primary">Save Key & Parse</button>
+          <button type="button" id="btnForceOffline" class="btn-tertiary">Parse Offline Anyway</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</body>
+</html>
