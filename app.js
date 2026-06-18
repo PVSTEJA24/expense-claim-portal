@@ -57,6 +57,7 @@ const state = {
   },
   ai: {
     apiKey: '',
+    provider: 'gemini', // 'gemini' or 'groq'
     useAi: false,
     alwaysUseAi: false,
     model: 'gemini-1.5-flash'
@@ -82,6 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load AI Settings from localStorage
   state.ai.apiKey = localStorage.getItem('gemini_api_key') || '';
+  state.ai.provider = detectProvider(state.ai.apiKey);
   state.ai.alwaysUseAi = localStorage.getItem('always_use_ai') === 'true';
   
   // If alwaysUseAi is true, useAi must be enabled as well
@@ -217,22 +219,35 @@ function setupEventListeners() {
       btnTestApiKey.className = 'btn-test-key'; // Reset classes
 
       try {
-        const modelName = await testGeminiApiKey(key);
-        if (modelName) {
-          btnTestApiKey.textContent = `Connection OK (${modelName})`;
+        const provider = detectProvider(key);
+        let label = '';
+        if (provider === 'groq') {
+          label = await testGroqApiKey(key);
+        } else if (provider === 'cerebras') {
+          label = await testCerebrasApiKey(key);
+        } else if (provider === 'openai') {
+          label = await testOpenAIApiKey(key);
+        } else if (provider === 'claude') {
+          label = await testClaudeApiKey(key);
+        } else {
+          label = await testGeminiApiKey(key);
+        }
+        const providerNames = { gemini: 'Gemini', groq: 'Groq', openai: 'OpenAI', claude: 'Claude', cerebras: 'Cerebras' };
+        if (label) {
+          btnTestApiKey.textContent = `Connection OK (${label})`;
           btnTestApiKey.classList.add('success');
-          showToast(`Gemini API Key is valid! Selected: ${modelName}`, 'success');
+          showToast(`${providerNames[provider]} API Key is valid! Model: ${label}`, 'success');
           updateParserStatusBadge();
         } else {
           btnTestApiKey.textContent = 'Connection Failed';
           btnTestApiKey.classList.add('error');
-          showToast('Gemini API Key validation failed.', 'error');
+          showToast('API Key validation failed.', 'error');
         }
       } catch (err) {
         btnTestApiKey.textContent = 'Connection Failed';
         btnTestApiKey.classList.add('error');
         showToast(`API Key test failed: ${err.message}`, 'error');
-        showDebugError(`Gemini API test error: ${err.message}`);
+        showDebugError(`API test error: ${err.message}`);
       } finally {
         setTimeout(() => {
           btnTestApiKey.disabled = false;
@@ -804,6 +819,334 @@ Do not include any explanation or markdown formatting (like \`\`\`json). Just re
 }
 
 // Test if the Gemini API Key is working by listing available models and selecting the best one
+// Detect which AI provider the key belongs to based on its prefix
+function detectProvider(key) {
+  if (!key) return 'gemini';
+  if (key.startsWith('gsk_')) return 'groq';
+  if (key.startsWith('csk-')) return 'cerebras';
+  if (key.startsWith('sk-ant-')) return 'claude';
+  if (key.startsWith('sk-')) return 'openai';
+  return 'gemini';
+}
+
+// Test Groq API key validity
+async function testGroqApiKey(apiKey) {
+  const url = 'https://api.groq.com/openai/v1/models';
+  const response = await fetch(url, {
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    }
+  });
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    const errMsg = errData.error?.message || `HTTP ${response.status}`;
+    throw new Error(`Groq key validation failed: ${errMsg}`);
+  }
+  const data = await response.json();
+  // Pick a preferred fast model
+  const preferred = ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'llama3-8b-8192', 'mixtral-8x7b-32768'];
+  const found = data.data?.find(m => preferred.includes(m.id));
+  const model = found ? found.id : data.data?.[0]?.id || 'groq-model';
+  state.ai.provider = 'groq';
+  state.ai.model = model;
+  localStorage.setItem('ai_provider', 'groq');
+  localStorage.setItem('gemini_selected_model', model);
+  return model;
+}
+
+// Parse extracted text using Groq (text-only, no vision)
+async function parseTextWithGroq(extractedText, apiKey) {
+  const model = state.ai.model || 'llama-3.3-70b-versatile';
+  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
+Return ONLY a valid JSON object with this exact format:
+{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
+
+Bill text:
+${extractedText.substring(0, 4000)}`;
+
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 256
+    })
+  });
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}));
+    throw new Error(errData.error?.message || `Groq HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.choices?.[0]?.message?.content;
+  if (!rawText) throw new Error('No response from Groq');
+
+  let cleanedText = rawText.trim();
+  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleanedText);
+  } catch (e) {
+    throw new Error(`Invalid JSON from Groq: ${e.message}`);
+  }
+
+  if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
+  let extractedDate = null;
+  if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) extractedDate = parsed.date;
+
+  return {
+    description: parsed.description || 'Expense Bill',
+    amount: parsed.amount,
+    date: extractedDate
+  };
+}
+
+// ── Cerebras ─────────────────────────────────────────────────────────────────
+async function testCerebrasApiKey(apiKey) {
+  const response = await fetch('https://api.cerebras.ai/v1/models', {
+    headers: { 'Authorization': `Bearer ${apiKey}` }
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Cerebras HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  const preferred = ['llama-3.3-70b', 'llama3.1-70b', 'llama3.1-8b', 'llama-4-scout-17b-16e-instruct'];
+  const found = data.data?.find(m => preferred.includes(m.id));
+  const model = found ? found.id : data.data?.[0]?.id || 'llama-3.3-70b';
+  state.ai.provider = 'cerebras';
+  state.ai.model = model;
+  localStorage.setItem('ai_provider', 'cerebras');
+  localStorage.setItem('gemini_selected_model', model);
+  return model;
+}
+
+async function parseTextWithCerebras(extractedText, apiKey) {
+  const model = state.ai.model || 'llama-3.3-70b';
+  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
+Return ONLY a valid JSON object with this exact format:
+{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
+
+Bill text:
+${extractedText.substring(0, 4000)}`;
+
+  const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 256
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Cerebras HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.choices?.[0]?.message?.content;
+  if (!rawText) throw new Error('No response from Cerebras');
+
+  let cleanedText = rawText.trim();
+  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
+
+  let parsed;
+  try { parsed = JSON.parse(cleanedText); }
+  catch (e) { throw new Error(`Invalid JSON from Cerebras: ${e.message}`); }
+
+  if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
+  let extractedDate = null;
+  if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) extractedDate = parsed.date;
+
+  return {
+    description: parsed.description || 'Expense Bill',
+    amount: parsed.amount,
+    date: extractedDate
+  };
+}
+
+// ── OpenAI ──────────────────────────────────────────────────────────────────
+async function testOpenAIApiKey(apiKey) {
+  const response = await fetch('https://api.openai.com/v1/models', {
+    headers: { 'Authorization': `Bearer ${apiKey}` }
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `OpenAI HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  const preferred = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'];
+  const found = data.data?.find(m => preferred.includes(m.id));
+  const model = found ? found.id : data.data?.[0]?.id || 'gpt-4o';
+  state.ai.provider = 'openai';
+  state.ai.model = model;
+  localStorage.setItem('ai_provider', 'openai');
+  localStorage.setItem('gemini_selected_model', model);
+  return model;
+}
+
+async function parseFileWithOpenAI(base64Data, mimeType, fileName, apiKey) {
+  const model = state.ai.model || 'gpt-4o';
+  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor name from this bill.
+Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor name>"}`;
+
+  // OpenAI vision supports images; PDFs need text extraction first
+  const isImage = mimeType.startsWith('image/');
+  let messages;
+
+  if (isImage) {
+    messages = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64Data}`, detail: 'high' } }
+      ]
+    }];
+  } else {
+    // For PDFs: we can still try sending as image if it's a single-page PDF rendered,
+    // but OpenAI doesn't support PDF directly — we'll send the base64 as text context
+    messages = [{
+      role: 'user',
+      content: `${prompt}\n\nFile: ${fileName} (base64 encoded, unable to render PDF directly — extract from filename or any visible text clues).`
+    }];
+  }
+
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: 256 })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `OpenAI HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.choices?.[0]?.message?.content;
+  if (!rawText) throw new Error('No response from OpenAI');
+
+  let cleanedText = rawText.trim();
+  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
+
+  let parsed;
+  try { parsed = JSON.parse(cleanedText); }
+  catch (e) { throw new Error(`Invalid JSON from OpenAI: ${e.message}`); }
+
+  if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
+  let extractedDate = null;
+  if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) extractedDate = parsed.date;
+
+  return { description: parsed.description || 'Expense Bill', amount: parsed.amount, date: extractedDate };
+}
+
+// ── Claude ───────────────────────────────────────────────────────────────────
+async function testClaudeApiKey(apiKey) {
+  // Claude doesn't have a /models list endpoint without a paid plan; 
+  // we do a minimal message call to verify the key
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'claude-3-5-haiku-20241022',
+      max_tokens: 10,
+      messages: [{ role: 'user', content: 'Hi' }]
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Claude HTTP ${response.status}`);
+  }
+  const model = 'claude-3-5-haiku-20241022';
+  state.ai.provider = 'claude';
+  state.ai.model = model;
+  localStorage.setItem('ai_provider', 'claude');
+  localStorage.setItem('gemini_selected_model', model);
+  return model;
+}
+
+async function parseFileWithClaude(base64Data, mimeType, fileName, apiKey) {
+  const model = state.ai.model || 'claude-3-5-haiku-20241022';
+  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor name from this bill.
+Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor name>"}`;
+
+  const isImage = mimeType.startsWith('image/');
+  const isPdf = mimeType === 'application/pdf';
+  let content;
+
+  if (isImage) {
+    content = [
+      { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64Data } },
+      { type: 'text', text: prompt }
+    ];
+  } else if (isPdf) {
+    // Claude supports PDF natively via document type
+    content = [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64Data } },
+      { type: 'text', text: prompt }
+    ];
+  } else {
+    content = [{ type: 'text', text: `${prompt}\n\nFile: ${fileName}` }];
+  }
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ model, max_tokens: 256, messages: [{ role: 'user', content }] })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Claude HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.content?.[0]?.text;
+  if (!rawText) throw new Error('No response from Claude');
+
+  let cleanedText = rawText.trim();
+  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
+
+  let parsed;
+  try { parsed = JSON.parse(cleanedText); }
+  catch (e) { throw new Error(`Invalid JSON from Claude: ${e.message}`); }
+
+  if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
+  let extractedDate = null;
+  if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) extractedDate = parsed.date;
+
+  return { description: parsed.description || 'Expense Bill', amount: parsed.amount, date: extractedDate };
+}
+
+// ── Gemini ───────────────────────────────────────────────────────────────────
 async function testGeminiApiKey(apiKey) {
   const bestModel = await discoverBestModel(apiKey);
   state.ai.model = bestModel;
@@ -1018,19 +1361,65 @@ async function handleFiles(files) {
       try {
         let result = null;
 
-        // Try Gemini Multimodal Parsing first if enabled
+        // Try AI parsing based on detected provider
         if (state.ai.useAi && state.ai.apiKey) {
+          const provider = detectProvider(state.ai.apiKey);
           try {
-            updateOcrProgress(20, `Sending file to Gemini AI...`);
-            const base64Data = await fileToBase64(file);
-            const mimeType = file.type || getMimeTypeFromExtension(file.name);
-            
-            updateOcrProgress(50, `Parsing with Gemini AI...`);
-            result = await parseFileWithGemini(base64Data, mimeType, state.ai.apiKey);
+            if (provider === 'gemini') {
+              updateOcrProgress(20, `Sending file to Gemini AI...`);
+              const base64Data = await fileToBase64(file);
+              const mimeType = file.type || getMimeTypeFromExtension(file.name);
+              updateOcrProgress(50, `Parsing with Gemini AI...`);
+              result = await parseFileWithGemini(base64Data, mimeType, state.ai.apiKey);
+
+            } else if (provider === 'openai') {
+              updateOcrProgress(20, `Sending file to OpenAI...`);
+              const base64Data = await fileToBase64(file);
+              const mimeType = file.type || getMimeTypeFromExtension(file.name);
+              updateOcrProgress(50, `Parsing with OpenAI GPT-4o...`);
+              result = await parseFileWithOpenAI(base64Data, mimeType, file.name, state.ai.apiKey);
+
+            } else if (provider === 'claude') {
+              updateOcrProgress(20, `Sending file to Claude AI...`);
+              const base64Data = await fileToBase64(file);
+              const mimeType = file.type || getMimeTypeFromExtension(file.name);
+              updateOcrProgress(50, `Parsing with Claude AI...`);
+              result = await parseFileWithClaude(base64Data, mimeType, file.name, state.ai.apiKey);
+
+            } else if (provider === 'groq') {
+              // Groq is text-only: extract text first, then send to Groq
+              updateOcrProgress(20, `Extracting text for Groq...`);
+              let extractedText = '';
+              const ext = file.name.split('.').pop().toLowerCase();
+              if (ext === 'pdf') {
+                extractedText = await extractTextFromPdf(file);
+              } else if (isImageFile(file.name)) {
+                extractedText = await runOcrOnFile(file);
+              }
+              if (extractedText) {
+                updateOcrProgress(50, `Parsing with Groq LLM...`);
+                result = await parseTextWithGroq(extractedText, state.ai.apiKey);
+              }
+
+            } else if (provider === 'cerebras') {
+              // Cerebras is text-only: extract text first, then send to Cerebras
+              updateOcrProgress(20, `Extracting text for Cerebras...`);
+              let extractedText = '';
+              const ext = file.name.split('.').pop().toLowerCase();
+              if (ext === 'pdf') {
+                extractedText = await extractTextFromPdf(file);
+              } else if (isImageFile(file.name)) {
+                extractedText = await runOcrOnFile(file);
+              }
+              if (extractedText) {
+                updateOcrProgress(50, `Parsing with Cerebras LLM...`);
+                result = await parseTextWithCerebras(extractedText, state.ai.apiKey);
+              }
+            }
           } catch (aiErr) {
-            console.error("Gemini AI parsing failed, falling back to local OCR:", aiErr);
-            showToast(`Gemini AI failed for ${file.name}: ${aiErr.message}. Falling back to local OCR.`, "error");
-            showDebugError(`Gemini AI Error for ${file.name}: ${aiErr.message}`);
+            console.error(`${provider} AI parsing failed, falling back to local OCR:`, aiErr);
+            showToast(`AI parsing failed for ${file.name}: ${aiErr.message}. Falling back to local OCR.`, 'error');
+            showDebugError(`AI Error for ${file.name}: ${aiErr.message}`);
           }
         }
 
