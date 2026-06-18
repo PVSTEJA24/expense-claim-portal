@@ -1,6 +1,6 @@
 # 📊 Claim Statement Portal
 
-A premium, glassmorphic web portal built for **Pratishthan Software Ventures Pvt Ltd** employees to easily prepare and export expense claim statements.
+A premium, glassmorphic web portal built for employees to easily prepare and export expense claim statements.
 
 ## 🚀 Live Demo / Local Development
 
