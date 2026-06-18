@@ -58,6 +58,7 @@ const state = {
   ai: {
     apiKey: '',
     useAi: false,
+    alwaysUseAi: false,
     model: 'gemini-1.5-flash'
   },
   activeTab: 'phoneBroadband',
@@ -81,17 +82,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load AI Settings from localStorage
   state.ai.apiKey = localStorage.getItem('gemini_api_key') || '';
-  state.ai.useAi = localStorage.getItem('use_ai_parser') === 'true';
+  state.ai.alwaysUseAi = localStorage.getItem('always_use_ai') === 'true';
+  
+  // If alwaysUseAi is true, useAi must be enabled as well
+  if (state.ai.alwaysUseAi) {
+    state.ai.useAi = true;
+    localStorage.setItem('use_ai_parser', 'true');
+  } else {
+    state.ai.useAi = localStorage.getItem('use_ai_parser') === 'true';
+  }
+  
   state.ai.model = localStorage.getItem('gemini_selected_model') || 'gemini-1.5-flash';
 
   const geminiApiKeyInput = document.getElementById('geminiApiKey');
   const useAiParserCheckbox = document.getElementById('useAiParser');
+  const alwaysUseAiCheckbox = document.getElementById('alwaysUseAi');
 
   if (geminiApiKeyInput) {
     geminiApiKeyInput.value = state.ai.apiKey;
   }
   if (useAiParserCheckbox) {
     useAiParserCheckbox.checked = state.ai.useAi;
+  }
+  if (alwaysUseAiCheckbox) {
+    alwaysUseAiCheckbox.checked = state.ai.alwaysUseAi;
   }
 
   // Update parser status badge initially
@@ -156,6 +170,24 @@ function setupEventListeners() {
       }
       localStorage.setItem('use_ai_parser', state.ai.useAi);
       updateParserStatusBadge();
+    });
+  }
+
+  const alwaysUseAi = document.getElementById('alwaysUseAi');
+  if (alwaysUseAi) {
+    alwaysUseAi.addEventListener('change', (e) => {
+      state.ai.alwaysUseAi = e.target.checked;
+      localStorage.setItem('always_use_ai', state.ai.alwaysUseAi);
+      if (state.ai.alwaysUseAi && !state.ai.useAi) {
+        // Automatically enable Gemini AI Parser if they check this box
+        state.ai.useAi = true;
+        localStorage.setItem('use_ai_parser', 'true');
+        const useAiParserCheckbox = document.getElementById('useAiParser');
+        if (useAiParserCheckbox) {
+          useAiParserCheckbox.checked = true;
+        }
+        updateParserStatusBadge();
+      }
     });
   }
 
@@ -919,7 +951,7 @@ async function handleFiles(files) {
   // 1. Separate fast-path files from content-scan files
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const parsed = parseFileName(file.name);
+    const parsed = state.ai.alwaysUseAi ? null : parseFileName(file.name);
     const fileDate = getFormattedFileDate(file);
     
     if (parsed) {

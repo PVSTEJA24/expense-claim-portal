@@ -6,7 +6,7 @@
   <title>Expense Claim Statement Portal</title>
   <meta name="description" content="Fill and download your company expense claim statement as Excel"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
@@ -40,7 +40,7 @@
           <p>
             This portal supports two parsing modes. 
             <strong>Local Offline Mode (No API Key Required):</strong> If your bills are named with the amount (e.g. <code>zomato_345.pdf</code> or <code>uber_120.png</code>), details are parsed instantly offline. 
-            <strong>Gemini AI Mode (API Key Required):</strong> If filenames are generic (e.g. <code>zomato.pdf</code> or <code>invoice.png</code>), a Gemini API Key is required to read the bill contents using Gemini AI.
+            <strong>Gemini AI Mode (API Key Required):</strong> If filenames are generic (e.g. <code>zomato.pdf</code> or <code>invoice.png</code>), you must enable both check boxes and a Gemini API Key is required to read the bill contents using Gemini AI.
           </p>
         </div>
       </div>
@@ -82,7 +82,12 @@
         </div>
         <div class="ai-grid">
           <div class="form-group">
-            <label for="geminiApiKey">Gemini API Key</label>
+            <label for="geminiApiKey" class="label-with-info">
+              Gemini API Key
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" class="info-icon-link" title="Click to get your free Gemini API Key from Google AI Studio">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              </a>
+            </label>
             <div class="api-key-input-wrapper">
               <input type="password" id="geminiApiKey" placeholder="AIZAy..." autocomplete="off"/>
               <button type="button" id="toggleApiKeyVisibility" class="btn-toggle-visibility" title="Show/Hide API Key">
@@ -96,7 +101,14 @@
             <label class="switch-container">
               <input type="checkbox" id="useAiParser" />
               <span class="switch-slider"></span>
-              <span class="switch-label">Enable Gemini AI Parser</span>
+              <span class="switch-label">Enable AI Parser</span>
+            </label>
+          </div>
+          <div class="form-group toggle-group">
+            <label class="switch-container">
+              <input type="checkbox" id="alwaysUseAi" />
+              <span class="switch-slider"></span>
+              <span class="switch-label">Always use AI</span>
             </label>
           </div>
         </div>
@@ -138,7 +150,7 @@
               </div>
               <div class="instruction-item">
                 <span class="icon">🤖</span>
-                <span>If filenames are generic (e.g., <code>zomato.pdf</code>), you must enable the <strong>Gemini API Key</strong> to read the bill contents.</span>
+                <span>If filenames are generic (e.g., <code>zomato.pdf</code>), you must enable both check boxes and a <strong>Gemini API Key</strong> is required to read the bill contents.</span>
               </div>
             </div>
           </div>
@@ -347,6 +359,6 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-  <script type="module" src="app.js?v=1.0.1"></script>
+  <script type="module" src="app.js?v=1.0.2"></script>
 </body>
 </html>
