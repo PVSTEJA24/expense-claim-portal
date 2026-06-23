@@ -208,8 +208,8 @@ function setupEventListeners() {
   const btnTestApiKey = document.getElementById('btnTestApiKey');
   if (btnTestApiKey) {
     btnTestApiKey.addEventListener('click', async () => {
-      const key = state.ai.apiKey;
-      if (!key) {
+      const keys = getApiKeys();
+      if (keys.length === 0) {
         showToast('Please enter an API Key to test.', 'error');
         return;
       }
@@ -219,12 +219,15 @@ function setupEventListeners() {
       btnTestApiKey.className = 'btn-test-key'; // Reset classes
 
       try {
+        const key = keys[0];
         const provider = detectProvider(key);
         let label = '';
         if (provider === 'groq') {
           label = await testGroqApiKey(key);
         } else if (provider === 'cerebras') {
           label = await testCerebrasApiKey(key);
+        } else if (provider === 'huggingface') {
+          label = await testHuggingFaceApiKey(key);
         } else if (provider === 'openai') {
           label = await testOpenAIApiKey(key);
         } else if (provider === 'claude') {
@@ -232,7 +235,7 @@ function setupEventListeners() {
         } else {
           label = await testGeminiApiKey(key);
         }
-        const providerNames = { gemini: 'Gemini', groq: 'Groq', openai: 'OpenAI', claude: 'Claude', cerebras: 'Cerebras' };
+        const providerNames = { gemini: 'Gemini', groq: 'Groq', openai: 'OpenAI', claude: 'Claude', cerebras: 'Cerebras', huggingface: 'Hugging Face' };
         if (label) {
           btnTestApiKey.textContent = `Connection OK (${label})`;
           btnTestApiKey.classList.add('success');
@@ -300,6 +303,9 @@ function setupEventListeners() {
       fileInput.value = '';
     });
   }
+
+  // Set up the Token Estimator logic
+  setupEstimator();
 }
 
 function preventDefaults(e) {
@@ -366,10 +372,11 @@ function updateOcrProgress(percent, statusText) {
 }
 
 // Run Tesseract OCR on source (Image URL or Canvas)
-async function runOcrOnSource(source) {
+async function runOcrOnSource(source, progressCallback) {
   if (typeof Tesseract === 'undefined') {
     throw new Error('Tesseract library is not loaded');
   }
+  const progressFn = progressCallback || updateOcrProgress;
   const result = await Tesseract.recognize(
     source,
     'eng',
@@ -377,11 +384,11 @@ async function runOcrOnSource(source) {
       logger: m => {
         if (m.status === 'recognizing text') {
           const pct = Math.round(m.progress * 100);
-          updateOcrProgress(pct, `Scanning image contents: ${pct}%`);
+          progressFn(pct, `Scanning image contents: ${pct}%`);
         } else {
           // Capitalize status string for clean display
           const statusStr = m.status.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-          updateOcrProgress(15, `${statusStr}...`);
+          progressFn(15, `${statusStr}...`);
         }
       }
     }
@@ -390,7 +397,7 @@ async function runOcrOnSource(source) {
 }
 
 // Run Tesseract OCR on File object and return raw text
-async function runOcrOnFile(file) {
+async function runOcrOnFile(file, progressCallback) {
   if (typeof Tesseract === 'undefined') {
     showToast('Tesseract.js OCR library not loaded!', 'error');
     throw new Error('Tesseract.js library is not loaded. The CDN connection might have been blocked or interrupted.');
@@ -399,7 +406,7 @@ async function runOcrOnFile(file) {
   let imageUrl = '';
   try {
     imageUrl = URL.createObjectURL(file);
-    const text = await runOcrOnSource(imageUrl);
+    const text = await runOcrOnSource(imageUrl, progressCallback);
     return text;
   } catch (err) {
     console.error('Tesseract recognition error:', err);
@@ -412,7 +419,7 @@ async function runOcrOnFile(file) {
 }
 
 // Extract text from PDF (uses pdf.js for text stream, renders to canvas if scanned)
-async function extractTextFromPdf(file) {
+async function extractTextFromPdf(file, progressCallback) {
   if (typeof pdfjsLib === 'undefined') {
     showToast('PDF library not loaded!', 'error');
     throw new Error('pdf.js library is not loaded. The CDN connection might have been blocked or interrupted.');
@@ -421,12 +428,13 @@ async function extractTextFromPdf(file) {
   // Set worker source
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
 
-  updateOcrProgress(5, 'Loading PDF document...');
+  const progressFn = progressCallback || updateOcrProgress;
+  progressFn(5, 'Loading PDF document...');
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = '';
 
-  updateOcrProgress(15, `Parsing PDF (0/${pdf.numPages} pages)...`);
+  progressFn(15, `Parsing PDF (0/${pdf.numPages} pages)...`);
   
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
@@ -435,7 +443,7 @@ async function extractTextFromPdf(file) {
     
     // Check if the page is likely a scanned PDF (very low text content)
     if (pageText.trim().length < 20) {
-      updateOcrProgress(30, `Scanned page detected. Rendering page ${i} of ${pdf.numPages}...`);
+      progressFn(30, `Scanned page detected. Rendering page ${i} of ${pdf.numPages}...`);
       
       const viewport = page.getViewport({ scale: 1.5 });
       const canvas = document.createElement('canvas');
@@ -445,8 +453,8 @@ async function extractTextFromPdf(file) {
       
       await page.render({ canvasContext: context, viewport: viewport }).promise;
       
-      updateOcrProgress(45, `Running OCR on page ${i} of ${pdf.numPages}...`);
-      const ocrText = await runOcrOnSource(canvas);
+      progressFn(45, `Running OCR on page ${i} of ${pdf.numPages}...`);
+      const ocrText = await runOcrOnSource(canvas, progressCallback);
       pageText = ocrText;
     }
     
@@ -709,6 +717,104 @@ function getMimeTypeFromExtension(filename) {
   return 'application/octet-stream';
 }
 
+// A simple JSON repair helper for common LLM syntax issues (truncations/unescaped chars)
+function repairJsonString(jsonStr) {
+  let repaired = jsonStr.trim();
+  
+  // 1. If it's unterminated (e.g. truncated), try to close open quotes/brackets/braces
+  let openQuotes = false;
+  let braces = 0;
+  let brackets = 0;
+  
+  for (let i = 0; i < repaired.length; i++) {
+    const char = repaired[i];
+    if (char === '"' && repaired[i-1] !== '\\') {
+      openQuotes = !openQuotes;
+    } else if (!openQuotes) {
+      if (char === '{') braces++;
+      else if (char === '}') braces--;
+      else if (char === '[') brackets++;
+      else if (char === ']') brackets--;
+    }
+  }
+  
+  if (openQuotes) {
+    repaired += '"';
+  }
+  while (brackets > 0) {
+    repaired += ']';
+    brackets--;
+  }
+  while (braces > 0) {
+    repaired += '}';
+    braces--;
+  }
+  
+  // 2. Remove unescaped control characters (newlines, tabs) inside string values
+  let parsedRepaired = "";
+  let insideStr = false;
+  for (let i = 0; i < repaired.length; i++) {
+    const char = repaired[i];
+    if (char === '"' && repaired[i-1] !== '\\') {
+      insideStr = !insideStr;
+      parsedRepaired += char;
+    } else if (insideStr) {
+      if (char === '\n') {
+        parsedRepaired += '\\n';
+      } else if (char === '\r') {
+        parsedRepaired += '\\r';
+      } else if (char === '\t') {
+        parsedRepaired += '\\t';
+      } else {
+        parsedRepaired += char;
+      }
+    } else {
+      parsedRepaired += char;
+    }
+  }
+  
+  return parsedRepaired;
+}
+
+// Extract outer JSON object or array from a string, stripping markdown blocks if present
+function extractJsonFromString(str) {
+  if (!str) return '';
+  let cleaned = str.trim();
+
+  // 1. Remove markdown code blocks if present
+  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/i;
+  const match = cleaned.match(codeBlockRegex);
+  if (match) {
+    cleaned = match[1].trim();
+  }
+
+  // 2. Extract outer JSON object or array structure
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+
+  let startIdx = -1;
+  let endIdx = -1;
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+    endIdx = cleaned.lastIndexOf('}');
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+    endIdx = cleaned.lastIndexOf(']');
+  }
+
+  if (startIdx !== -1) {
+    if (endIdx !== -1 && endIdx > startIdx) {
+      cleaned = cleaned.substring(startIdx, endIdx + 1);
+    } else {
+      cleaned = cleaned.substring(startIdx);
+    }
+  }
+
+  // 3. Repair common JSON malformations or truncations
+  return repairJsonString(cleaned);
+}
+
 // Parse raw file directly using Gemini AI API (multimodal)
 async function parseFileWithGemini(base64Data, mimeType, apiKey) {
   const model = state.ai.model || 'gemini-1.5-flash';
@@ -737,7 +843,7 @@ Return ONLY a valid JSON object matching the schema below:
 
 Do not include any explanation or markdown formatting (like \`\`\`json). Just return the raw JSON object.`;
 
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -786,16 +892,16 @@ Do not include any explanation or markdown formatting (like \`\`\`json). Just re
     throw new Error("No response content from Gemini API");
   }
 
-  // Robust cleaning of markdown code blocks
-  let cleanedText = rawText.trim();
-  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (codeBlockMatch) {
-    cleanedText = codeBlockMatch[1].trim();
-  }
-
   let parsed;
   try {
+    const cleanedText = extractJsonFromString(rawText);
     parsed = JSON.parse(cleanedText);
+    if (Array.isArray(parsed)) {
+      parsed = parsed[0];
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("Result is not a valid JSON object");
+    }
   } catch (parseErr) {
     console.error("Failed to parse Gemini response as JSON. Raw text was:", rawText);
     throw new Error(`Invalid JSON response from model: ${parseErr.message}`);
@@ -824,6 +930,7 @@ function detectProvider(key) {
   if (!key) return 'gemini';
   if (key.startsWith('gsk_')) return 'groq';
   if (key.startsWith('csk-')) return 'cerebras';
+  if (key.startsWith('hf_')) return 'huggingface';
   if (key.startsWith('sk-ant-')) return 'claude';
   if (key.startsWith('sk-')) return 'openai';
   return 'gemini';
@@ -845,7 +952,7 @@ async function testGroqApiKey(apiKey) {
   }
   const data = await response.json();
   // Pick a preferred fast model
-  const preferred = ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'llama3-8b-8192', 'mixtral-8x7b-32768'];
+  const preferred = ['llama-3.1-8b-instant', 'llama-3.3-70b-versatile', 'llama3-8b-8192', 'mixtral-8x7b-32768'];
   const found = data.data?.find(m => preferred.includes(m.id));
   const model = found ? found.id : data.data?.[0]?.id || 'groq-model';
   state.ai.provider = 'groq';
@@ -857,7 +964,7 @@ async function testGroqApiKey(apiKey) {
 
 // Parse extracted text using Groq (text-only, no vision)
 async function parseTextWithGroq(extractedText, apiKey) {
-  const model = state.ai.model || 'llama-3.3-70b-versatile';
+  const model = state.ai.model || 'llama-3.1-8b-instant';
   const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
 Return ONLY a valid JSON object with this exact format:
 {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
@@ -865,7 +972,7 @@ Return ONLY a valid JSON object with this exact format:
 Bill text:
 ${extractedText.substring(0, 4000)}`;
 
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  const response = await fetchWithRetry('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -875,7 +982,7 @@ ${extractedText.substring(0, 4000)}`;
       model: model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
-      max_tokens: 256
+      max_tokens: 512
     })
   });
 
@@ -888,15 +995,108 @@ ${extractedText.substring(0, 4000)}`;
   const rawText = data.choices?.[0]?.message?.content;
   if (!rawText) throw new Error('No response from Groq');
 
-  let cleanedText = rawText.trim();
-  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
+  let parsed;
+  try {
+    const cleanedText = extractJsonFromString(rawText);
+    parsed = JSON.parse(cleanedText);
+    if (Array.isArray(parsed)) {
+      parsed = parsed[0];
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("Result is not a valid JSON object");
+    }
+  } catch (e) {
+    throw new Error(`Invalid JSON from Groq: ${e.message}`);
+  }
+
+  if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
+  let extractedDate = null;
+  if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) extractedDate = parsed.date;
+
+  return {
+    description: parsed.description || 'Expense Bill',
+    amount: parsed.amount,
+    date: extractedDate
+  };
+}
+
+// ── Hugging Face ─────────────────────────────────────────────────────────────
+async function testHuggingFaceApiKey(apiKey) {
+  const targetUrl = 'https://router.huggingface.co/v1/chat/completions';
+  const proxyUrl = `https://proxy.corsfix.com/?url=${encodeURIComponent(targetUrl)}`;
+  
+  // Use the OpenAI-compatible router to test with a small request
+  const response = await fetch(proxyUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'Qwen/Qwen2.5-7B-Instruct',
+      messages: [{ role: 'user', content: 'Hi' }],
+      max_tokens: 5
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || err.error || `Hugging Face HTTP ${response.status}`);
+  }
+  const model = 'Qwen/Qwen2.5-7B-Instruct';
+  state.ai.provider = 'huggingface';
+  state.ai.model = model;
+  localStorage.setItem('ai_provider', 'huggingface');
+  localStorage.setItem('gemini_selected_model', model);
+  return model;
+}
+
+async function parseTextWithHuggingFace(extractedText, apiKey) {
+  const model = state.ai.model || 'Qwen/Qwen2.5-7B-Instruct';
+  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
+Return ONLY a valid JSON object with this exact format:
+{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
+
+Bill text:
+${extractedText.substring(0, 3000)}`;
+
+  const targetUrl = 'https://router.huggingface.co/v1/chat/completions';
+  const proxyUrl = `https://proxy.corsfix.com/?url=${encodeURIComponent(targetUrl)}`;
+
+  const response = await fetchWithRetry(proxyUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 512
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || err.error || `Hugging Face HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.choices?.[0]?.message?.content;
+  if (!rawText) throw new Error('No response from Hugging Face');
 
   let parsed;
   try {
+    const cleanedText = extractJsonFromString(rawText);
     parsed = JSON.parse(cleanedText);
+    if (Array.isArray(parsed)) {
+      parsed = parsed[0];
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("Result is not a valid JSON object");
+    }
   } catch (e) {
-    throw new Error(`Invalid JSON from Groq: ${e.message}`);
+    throw new Error(`Invalid JSON from Hugging Face: ${e.message}`);
   }
 
   if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
@@ -939,7 +1139,7 @@ Return ONLY a valid JSON object with this exact format:
 Bill text:
 ${extractedText.substring(0, 4000)}`;
 
-  const response = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+  const response = await fetchWithRetry('https://api.cerebras.ai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -949,7 +1149,7 @@ ${extractedText.substring(0, 4000)}`;
       model: model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
-      max_tokens: 256
+      max_tokens: 512
     })
   });
 
@@ -962,13 +1162,19 @@ ${extractedText.substring(0, 4000)}`;
   const rawText = data.choices?.[0]?.message?.content;
   if (!rawText) throw new Error('No response from Cerebras');
 
-  let cleanedText = rawText.trim();
-  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
-
   let parsed;
-  try { parsed = JSON.parse(cleanedText); }
-  catch (e) { throw new Error(`Invalid JSON from Cerebras: ${e.message}`); }
+  try {
+    const cleanedText = extractJsonFromString(rawText);
+    parsed = JSON.parse(cleanedText);
+    if (Array.isArray(parsed)) {
+      parsed = parsed[0];
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("Result is not a valid JSON object");
+    }
+  } catch (e) {
+    throw new Error(`Invalid JSON from Cerebras: ${e.message}`);
+  }
 
   if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
   let extractedDate = null;
@@ -1027,10 +1233,10 @@ Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "de
     }];
   }
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+  const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: 256 })
+    body: JSON.stringify({ model, messages, temperature: 0.1, max_tokens: 512 })
   });
 
   if (!response.ok) {
@@ -1042,13 +1248,19 @@ Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "de
   const rawText = data.choices?.[0]?.message?.content;
   if (!rawText) throw new Error('No response from OpenAI');
 
-  let cleanedText = rawText.trim();
-  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
-
   let parsed;
-  try { parsed = JSON.parse(cleanedText); }
-  catch (e) { throw new Error(`Invalid JSON from OpenAI: ${e.message}`); }
+  try {
+    const cleanedText = extractJsonFromString(rawText);
+    parsed = JSON.parse(cleanedText);
+    if (Array.isArray(parsed)) {
+      parsed = parsed[0];
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("Result is not a valid JSON object");
+    }
+  } catch (e) {
+    throw new Error(`Invalid JSON from OpenAI: ${e.message}`);
+  }
 
   if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
   let extractedDate = null;
@@ -1111,7 +1323,7 @@ Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "de
     content = [{ type: 'text', text: `${prompt}\n\nFile: ${fileName}` }];
   }
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
@@ -1119,7 +1331,7 @@ Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "de
       'anthropic-dangerous-direct-browser-access': 'true',
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ model, max_tokens: 256, messages: [{ role: 'user', content }] })
+    body: JSON.stringify({ model, max_tokens: 512, messages: [{ role: 'user', content }] })
   });
 
   if (!response.ok) {
@@ -1131,13 +1343,19 @@ Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "de
   const rawText = data.content?.[0]?.text;
   if (!rawText) throw new Error('No response from Claude');
 
-  let cleanedText = rawText.trim();
-  const codeBlockMatch = cleanedText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  if (codeBlockMatch) cleanedText = codeBlockMatch[1].trim();
-
   let parsed;
-  try { parsed = JSON.parse(cleanedText); }
-  catch (e) { throw new Error(`Invalid JSON from Claude: ${e.message}`); }
+  try {
+    const cleanedText = extractJsonFromString(rawText);
+    parsed = JSON.parse(cleanedText);
+    if (Array.isArray(parsed)) {
+      parsed = parsed[0];
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error("Result is not a valid JSON object");
+    }
+  } catch (e) {
+    throw new Error(`Invalid JSON from Claude: ${e.message}`);
+  }
 
   if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
   let extractedDate = null;
@@ -1284,6 +1502,214 @@ function promptForApiKey(files) {
   });
 }
 
+// Dialog warning about insufficient keys and prompting for more keys
+function promptForMoreKeys(totalTokens, recommendedKeys, currentKeysCount) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('apiKeyModal');
+    const titleEl = document.getElementById('apiKeyModalTitle');
+    const descEl = document.getElementById('apiKeyModalDesc');
+    const fileListContainer = document.getElementById('modalFileList');
+    const instructionEl = document.getElementById('apiKeyModalInstruction');
+    const keyInput = document.getElementById('modalGeminiApiKey');
+    
+    const saveBtn = document.getElementById('btnSaveModalKey');
+    const cancelBtn = document.getElementById('btnCancelModal');
+    const forceOfflineBtn = document.getElementById('btnForceOffline');
+    const toggleBtn = document.getElementById('toggleModalApiKeyVisibility');
+
+    if (!modal || !keyInput) {
+      resolve({ action: 'continue' });
+      return;
+    }
+
+    // Backup original content to restore later
+    const originalTitle = titleEl ? titleEl.innerHTML : 'Gemini API Key Required';
+    const originalDesc = descEl ? descEl.innerHTML : '';
+    const originalInstruction = instructionEl ? instructionEl.innerHTML : '';
+    const originalFileListDisplay = fileListContainer ? fileListContainer.style.display : 'block';
+    const originalSaveText = saveBtn ? saveBtn.textContent : 'Save Key & Parse';
+    const originalForceText = forceOfflineBtn ? forceOfflineBtn.textContent : 'Parse Offline Anyway';
+    
+    // Set custom content for warning
+    if (titleEl) titleEl.innerHTML = '⚠️ Insufficient API Keys';
+    if (descEl) {
+      descEl.innerHTML = `
+        Estimated batch tokens: <strong>${totalTokens.toLocaleString()}</strong>.<br/>
+        We recommend <strong>${recommendedKeys}</strong> API keys to parse this batch without rate limits.<br/>
+        You currently have <strong>${currentKeysCount}</strong> key(s) configured.
+      `;
+    }
+    if (fileListContainer) fileListContainer.style.display = 'none';
+    if (instructionEl) instructionEl.innerHTML = 'Please enter/add more API keys below (separated by commas, spaces, or newlines):';
+    
+    keyInput.value = state.ai.apiKey || '';
+    keyInput.placeholder = "Paste your comma-separated keys here...";
+    
+    if (saveBtn) saveBtn.textContent = 'Save Keys & Parse';
+    if (forceOfflineBtn) forceOfflineBtn.textContent = 'Use Current Keys Anyway';
+    
+    modal.classList.add('show');
+
+    const cleanup = () => {
+      modal.classList.remove('show');
+      
+      // Restore original content
+      if (titleEl) titleEl.innerHTML = originalTitle;
+      if (descEl) descEl.innerHTML = originalDesc;
+      if (fileListContainer) {
+        fileListContainer.style.display = originalFileListDisplay;
+      }
+      if (instructionEl) instructionEl.innerHTML = originalInstruction;
+      if (saveBtn) saveBtn.textContent = originalSaveText;
+      if (forceOfflineBtn) forceOfflineBtn.textContent = originalForceText;
+      keyInput.placeholder = "AIZAy...";
+      
+      // Clone buttons to strip listeners
+      saveBtn.replaceWith(saveBtn.cloneNode(true));
+      cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+      forceOfflineBtn.replaceWith(forceOfflineBtn.cloneNode(true));
+      toggleBtn.replaceWith(toggleBtn.cloneNode(true));
+    };
+
+    document.getElementById('btnSaveModalKey').addEventListener('click', () => {
+      const enteredKeys = document.getElementById('modalGeminiApiKey').value.trim();
+      cleanup();
+      resolve({ action: 'save', keys: enteredKeys });
+    });
+
+    document.getElementById('btnForceOffline').addEventListener('click', () => {
+      cleanup();
+      resolve({ action: 'continue' });
+    });
+
+    document.getElementById('btnCancelModal').addEventListener('click', () => {
+      cleanup();
+      resolve({ action: 'cancel' });
+    });
+
+    document.getElementById('toggleModalApiKeyVisibility').addEventListener('click', () => {
+      const modalInput = document.getElementById('modalGeminiApiKey');
+      const toggleSvgBtn = document.getElementById('toggleModalApiKeyVisibility');
+      if (modalInput.type === 'password') {
+        modalInput.type = 'text';
+        toggleSvgBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+      } else {
+        modalInput.type = 'password';
+        toggleSvgBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+      }
+    });
+  });
+}
+
+// Estimate remaining tokens for remaining files in the queue
+function estimateRemainingTokens(remainingFiles) {
+  let totalSize = 0;
+  remainingFiles.forEach(f => { totalSize += f.size || 0; });
+  const totalWords = Math.round(totalSize / 1024 * 150);
+  return Math.round(totalWords * 1.33) + (remainingFiles.length * 856);
+}
+
+// Dialog warning about rate limit hit and prompting for more keys
+function promptForKeysOnRateLimit(totalTokens, recommendedKeys, currentKeysCount, remainingCount) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('apiKeyModal');
+    const titleEl = document.getElementById('apiKeyModalTitle');
+    const descEl = document.getElementById('apiKeyModalDesc');
+    const fileListContainer = document.getElementById('modalFileList');
+    const instructionEl = document.getElementById('apiKeyModalInstruction');
+    const keyInput = document.getElementById('modalGeminiApiKey');
+    
+    const saveBtn = document.getElementById('btnSaveModalKey');
+    const cancelBtn = document.getElementById('btnCancelModal');
+    const forceOfflineBtn = document.getElementById('btnForceOffline');
+    const toggleBtn = document.getElementById('toggleModalApiKeyVisibility');
+
+    if (!modal || !keyInput) {
+      resolve({ action: 'continue' });
+      return;
+    }
+
+    // Backup original content to restore later
+    const originalTitle = titleEl ? titleEl.innerHTML : 'Gemini API Key Required';
+    const originalDesc = descEl ? descEl.innerHTML : '';
+    const originalInstruction = instructionEl ? instructionEl.innerHTML : '';
+    const originalFileListDisplay = fileListContainer ? fileListContainer.style.display : 'block';
+    const originalSaveText = saveBtn ? saveBtn.textContent : 'Save Key & Parse';
+    const originalForceText = forceOfflineBtn ? forceOfflineBtn.textContent : 'Parse Offline Anyway';
+    
+    // Set custom content for rate limit warning
+    if (titleEl) titleEl.innerHTML = '⚠️ Rate Limit Reached (Keys Exhausted)';
+    if (descEl) {
+      descEl.innerHTML = `
+        Rate limit hit while parsing. Remaining files: <strong>${remainingCount}</strong>.<br/>
+        Estimated remaining tokens: <strong>${totalTokens.toLocaleString()}</strong>.<br/>
+        We recommend providing <strong>${recommendedKeys}</strong> API keys to continue without delay.
+      `;
+    }
+    if (fileListContainer) fileListContainer.style.display = 'none';
+    if (instructionEl) instructionEl.innerHTML = 'Please enter more API keys below (separated by commas, spaces, or newlines):';
+    
+    keyInput.value = state.ai.apiKey || '';
+    keyInput.placeholder = "Paste your comma-separated keys here...";
+    
+    if (saveBtn) saveBtn.textContent = 'Save Keys & Resume';
+    if (forceOfflineBtn) forceOfflineBtn.textContent = 'Skip & Use Local OCR';
+    if (cancelBtn) cancelBtn.textContent = 'Cancel Remaining';
+    
+    modal.classList.add('show');
+
+    const cleanup = () => {
+      modal.classList.remove('show');
+      
+      // Restore original content
+      if (titleEl) titleEl.innerHTML = originalTitle;
+      if (descEl) descEl.innerHTML = originalDesc;
+      if (fileListContainer) {
+        fileListContainer.style.display = originalFileListDisplay;
+      }
+      if (instructionEl) instructionEl.innerHTML = originalInstruction;
+      if (saveBtn) saveBtn.textContent = originalSaveText;
+      if (forceOfflineBtn) forceOfflineBtn.textContent = originalForceText;
+      if (cancelBtn) cancelBtn.textContent = 'Cancel Upload';
+      keyInput.placeholder = "AIZAy...";
+      
+      // Clone buttons to strip listeners
+      saveBtn.replaceWith(saveBtn.cloneNode(true));
+      cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+      forceOfflineBtn.replaceWith(forceOfflineBtn.cloneNode(true));
+      toggleBtn.replaceWith(toggleBtn.cloneNode(true));
+    };
+
+    document.getElementById('btnSaveModalKey').addEventListener('click', () => {
+      const enteredKeys = document.getElementById('modalGeminiApiKey').value.trim();
+      cleanup();
+      resolve({ action: 'save', keys: enteredKeys });
+    });
+
+    document.getElementById('btnForceOffline').addEventListener('click', () => {
+      cleanup();
+      resolve({ action: 'continue' });
+    });
+
+    document.getElementById('btnCancelModal').addEventListener('click', () => {
+      cleanup();
+      resolve({ action: 'cancel' });
+    });
+
+    document.getElementById('toggleModalApiKeyVisibility').addEventListener('click', () => {
+      const modalInput = document.getElementById('modalGeminiApiKey');
+      const toggleSvgBtn = document.getElementById('toggleModalApiKeyVisibility');
+      if (modalInput.type === 'password') {
+        modalInput.type = 'text';
+        toggleSvgBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+      } else {
+        modalInput.type = 'password';
+        toggleSvgBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+      }
+    });
+  });
+}
+
 // File Parsing & Handling
 async function handleFiles(files) {
   if (!files || files.length === 0) return;
@@ -1322,7 +1748,7 @@ async function handleFiles(files) {
 
   // 2. Intercept OCR queue if API Key is missing
   let skipOcr = false;
-  if (ocrQueue.length > 0 && !state.ai.apiKey) {
+  if (ocrQueue.length > 0 && getApiKeys().length === 0) {
     const response = await promptForApiKey(ocrQueue);
     if (response.action === 'save') {
       state.ai.apiKey = response.key;
@@ -1362,29 +1788,31 @@ async function handleFiles(files) {
         let result = null;
 
         // Try AI parsing based on detected provider
-        if (state.ai.useAi && state.ai.apiKey) {
-          const provider = detectProvider(state.ai.apiKey);
+        const keys = getApiKeys();
+        if (state.ai.useAi && keys.length > 0) {
+          const activeKey = getCurrentApiKey();
+          const provider = detectProvider(activeKey);
           try {
             if (provider === 'gemini') {
               updateOcrProgress(20, `Sending file to Gemini AI...`);
               const base64Data = await fileToBase64(file);
               const mimeType = file.type || getMimeTypeFromExtension(file.name);
               updateOcrProgress(50, `Parsing with Gemini AI...`);
-              result = await parseFileWithGemini(base64Data, mimeType, state.ai.apiKey);
+              result = await parseFileWithGemini(base64Data, mimeType, activeKey);
 
             } else if (provider === 'openai') {
               updateOcrProgress(20, `Sending file to OpenAI...`);
               const base64Data = await fileToBase64(file);
               const mimeType = file.type || getMimeTypeFromExtension(file.name);
               updateOcrProgress(50, `Parsing with OpenAI GPT-4o...`);
-              result = await parseFileWithOpenAI(base64Data, mimeType, file.name, state.ai.apiKey);
+              result = await parseFileWithOpenAI(base64Data, mimeType, file.name, activeKey);
 
             } else if (provider === 'claude') {
               updateOcrProgress(20, `Sending file to Claude AI...`);
               const base64Data = await fileToBase64(file);
               const mimeType = file.type || getMimeTypeFromExtension(file.name);
               updateOcrProgress(50, `Parsing with Claude AI...`);
-              result = await parseFileWithClaude(base64Data, mimeType, file.name, state.ai.apiKey);
+              result = await parseFileWithClaude(base64Data, mimeType, file.name, activeKey);
 
             } else if (provider === 'groq') {
               // Groq is text-only: extract text first, then send to Groq
@@ -1398,7 +1826,7 @@ async function handleFiles(files) {
               }
               if (extractedText) {
                 updateOcrProgress(50, `Parsing with Groq LLM...`);
-                result = await parseTextWithGroq(extractedText, state.ai.apiKey);
+                result = await parseTextWithGroq(extractedText, activeKey);
               }
 
             } else if (provider === 'cerebras') {
@@ -1413,14 +1841,69 @@ async function handleFiles(files) {
               }
               if (extractedText) {
                 updateOcrProgress(50, `Parsing with Cerebras LLM...`);
-                result = await parseTextWithCerebras(extractedText, state.ai.apiKey);
+                result = await parseTextWithCerebras(extractedText, activeKey);
+              }
+
+            } else if (provider === 'huggingface') {
+              // Hugging Face is text-only: extract text first, then send to HF
+              updateOcrProgress(20, `Extracting text for Hugging Face...`);
+              let extractedText = '';
+              const ext = file.name.split('.').pop().toLowerCase();
+              if (ext === 'pdf') {
+                extractedText = await extractTextFromPdf(file);
+              } else if (isImageFile(file.name)) {
+                extractedText = await runOcrOnFile(file);
+              }
+              if (extractedText) {
+                updateOcrProgress(50, `Parsing with Hugging Face...`);
+                result = await parseTextWithHuggingFace(extractedText, activeKey);
               }
             }
           } catch (aiErr) {
+            const errStr = (aiErr.message || '').toLowerCase();
+            const isRateLimit = errStr.includes('ratelimitreached') || 
+                                errStr.includes('rate limit') || 
+                                errStr.includes('429') || 
+                                errStr.includes('limit reached');
+
+            if (isRateLimit) {
+              const remainingFiles = ocrQueue.slice(j);
+              const estTokens = estimateRemainingTokens(remainingFiles);
+              const currentKeysCount = getApiKeys().length;
+              const recommendedKeys = Math.ceil(estTokens / 12000);
+              
+              // Hide main loader during popup interaction
+              showOcrOverlay(false);
+              const modalRes = await promptForKeysOnRateLimit(estTokens, recommendedKeys, currentKeysCount, remainingFiles.length);
+              showOcrOverlay(true);
+              
+              if (modalRes.action === 'save') {
+                state.ai.apiKey = modalRes.keys;
+                localStorage.setItem('gemini_api_key', modalRes.keys);
+                const geminiApiKeyInput = document.getElementById('geminiApiKey');
+                if (geminiApiKeyInput) {
+                  geminiApiKeyInput.value = modalRes.keys;
+                }
+                updateParserStatusBadge();
+                showToast('API Keys updated! Resuming parse...', 'success');
+                j--; // Retry current file
+                continue;
+              } else if (modalRes.action === 'cancel') {
+                showToast('Upload/parsing cancelled.', 'normal');
+                break; // Exit queue processing
+              }
+              // If action is 'continue', let it fall through to local OCR fallback for this file
+            }
+
             console.error(`${provider} AI parsing failed, falling back to local OCR:`, aiErr);
             showToast(`AI parsing failed for ${file.name}: ${aiErr.message}. Falling back to local OCR.`, 'error');
             showDebugError(`AI Error for ${file.name}: ${aiErr.message}`);
           }
+        }
+
+        // Add throttling delay (1 second) between files to prevent concurrent rate limit bursts
+        if (j < ocrQueue.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
 
         // Fallback to local OCR / PDF extraction + heuristics if Gemini was not used or failed
@@ -1987,3 +2470,315 @@ window.addRow = addRow;
 window.removeRow = removeRow;
 window.updateRowField = updateRowField;
 window.generateExcel = generateExcel;
+
+// Helper to extract keys array from state.ai.apiKey input
+function getApiKeys() {
+  const input = state.ai.apiKey || '';
+  return input.split(/[,\s\n]+/).map(k => k.trim()).filter(Boolean);
+}
+
+// Retrieve the currently active API key based on currentKeyIndex
+function getCurrentApiKey() {
+  const keys = getApiKeys();
+  if (keys.length === 0) return '';
+  if (state.ai.currentKeyIndex === undefined || state.ai.currentKeyIndex >= keys.length) {
+    state.ai.currentKeyIndex = 0;
+  }
+  return keys[state.ai.currentKeyIndex];
+}
+
+// Fetch wrapper with automatic retry on 429 and key rotation support
+async function fetchWithRetry(url, options, maxRetries = 5, initialDelayMs = 2000) {
+  let attempt = 0;
+  let rotations = 0;
+  let lastStatus = 200;
+  const keys = getApiKeys();
+  const maxRotations = keys.length > 1 ? keys.length : 1;
+
+  while (attempt < maxRetries) {
+    try {
+      const response = await fetch(url, options);
+      lastStatus = response.status;
+      
+      if (response.ok) {
+        return response;
+      }
+      
+      if (response.status === 429) {
+        if (keys.length > 1 && rotations < maxRotations) {
+          // Rotate to next key
+          state.ai.currentKeyIndex = (state.ai.currentKeyIndex + 1) % keys.length;
+          const newKey = keys[state.ai.currentKeyIndex];
+          rotations++;
+          
+          console.log(`Rate limit (429) hit. Rotating to key index ${state.ai.currentKeyIndex} (rotation ${rotations}/${maxRotations})...`);
+          showToast(`Rate limit hit. Automatically rotating to Key #${state.ai.currentKeyIndex + 1}...`, 'warning');
+          
+          // Update key in request options (case-insensitive check)
+          if (options && options.headers) {
+            let updated = false;
+            for (const hKey of Object.keys(options.headers)) {
+              const lowerKey = hKey.toLowerCase();
+              if (lowerKey === 'authorization') {
+                options.headers[hKey] = `Bearer ${newKey}`;
+                updated = true;
+              } else if (lowerKey === 'authorization-key') {
+                options.headers[hKey] = newKey;
+                updated = true;
+              } else if (lowerKey === 'x-api-key') {
+                options.headers[hKey] = newKey;
+                updated = true;
+              }
+            }
+            if (!updated) {
+              if (options.headers['Authorization']) {
+                options.headers['Authorization'] = `Bearer ${newKey}`;
+              } else if (options.headers['x-api-key']) {
+                options.headers['x-api-key'] = newKey;
+              }
+            }
+          }
+          
+          // Re-sign CORS proxy URL if needed
+          if (url.includes('proxy.corsfix.com')) {
+            const urlObj = new URL(url);
+            const originalTarget = urlObj.searchParams.get('url');
+            if (originalTarget) {
+              url = `https://proxy.corsfix.com/?url=${encodeURIComponent(originalTarget)}`;
+            }
+          }
+          
+          // Wait 100ms and retry instantly, resetting the attempt counter for the new key
+          attempt = 0;
+          await new Promise(resolve => setTimeout(resolve, 100));
+          continue;
+        } else {
+          // All keys exhausted: throw RateLimitReached immediately to trigger key prompt popup
+          throw new Error('RateLimitReached');
+        }
+      }
+      return response;
+    } catch (err) {
+      attempt++;
+      if (attempt >= maxRetries) throw err;
+      let delay = initialDelayMs * (2 ** attempt) + Math.random() * 500;
+      if (delay > 10000) delay = 10000; // Cap delay to max 10 seconds
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  if (lastStatus === 429) {
+    throw new Error('RateLimitReached');
+  }
+  throw new Error('Max retries exceeded');
+}
+
+// Switch between Claim Statement view and Bulk Token Estimator view
+function switchPage(pageId) {
+  document.querySelectorAll('.app-page').forEach(page => page.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+  
+  const pageEl = document.getElementById('page-' + pageId);
+  const btnEl = document.getElementById('btn-page-' + pageId);
+  
+  if (pageEl) pageEl.classList.add('active');
+  if (btnEl) btnEl.classList.add('active');
+  
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+window.switchPage = switchPage;
+
+// ── Bulk Token Estimator Logic ────────────────────────────────────────────────
+let estimatorFilesList = [];
+
+function setupEstimator() {
+  const dropZone = document.getElementById('estimatorDropZone');
+  const fileInput = document.getElementById('estimatorFileInput');
+  const sendBtn = document.getElementById('btnSendToPortal');
+
+  if (!dropZone || !fileInput) return;
+
+  // Click triggers file dialog
+  dropZone.addEventListener('click', (e) => {
+    if (e.target.tagName !== 'BUTTON') {
+      fileInput.click();
+    }
+  });
+
+  // Drag over styling
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('dragover');
+  });
+
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('dragover');
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length > 0) {
+      processEstimatorFiles(e.dataTransfer.files);
+    }
+  });
+
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      processEstimatorFiles(e.target.files);
+    }
+  });
+
+  if (sendBtn) {
+    sendBtn.addEventListener('click', async () => {
+      if (estimatorFilesList.length === 0) return;
+
+      const totalTokensText = document.getElementById('est-total-tokens').textContent.replace(/,/g, '');
+      const totalTokens = parseInt(totalTokensText) || 0;
+      const recommendedKeys = Math.ceil(totalTokens / 12000);
+      const currentKeysCount = getApiKeys().length;
+
+      if (state.ai.useAi && currentKeysCount < recommendedKeys) {
+        const modalRes = await promptForMoreKeys(totalTokens, recommendedKeys, currentKeysCount);
+        if (modalRes.action === 'cancel') {
+          return; // Stay on Estimator page
+        }
+        if (modalRes.action === 'save') {
+          state.ai.apiKey = modalRes.keys;
+          localStorage.setItem('gemini_api_key', modalRes.keys);
+          const geminiApiKeyInput = document.getElementById('geminiApiKey');
+          if (geminiApiKeyInput) {
+            geminiApiKeyInput.value = modalRes.keys;
+          }
+          updateParserStatusBadge();
+          showToast('API Keys updated successfully!', 'success');
+        }
+        // If action is 'continue' or 'save', proceed to transfer files
+      }
+      
+      // Transfer files to Claim Statement page
+      handleFiles(estimatorFilesList);
+      
+      // Reset estimator view
+      estimatorFilesList = [];
+      document.getElementById('estimatorFilesCard').style.display = 'none';
+      document.getElementById('btnSendToPortal').disabled = true;
+      document.getElementById('est-total-files').textContent = '0';
+      document.getElementById('est-total-words').textContent = '0';
+      document.getElementById('est-total-tokens').textContent = '0';
+      
+      // Switch back to Claim Statement page
+      switchPage('portal');
+      showToast('Transferred files to parsing queue!', 'success');
+    });
+  }
+}
+
+// Extract text and estimate tokens for each file locally
+async function processEstimatorFiles(files) {
+  const progressCard = document.getElementById('estimatorProgressCard');
+  const progressTitle = document.getElementById('estimatorProgressTitle');
+  const progressRatio = document.getElementById('estimatorProgressRatio');
+  const progressFill = document.getElementById('estimatorProgressFill');
+  const progressStatus = document.getElementById('estimatorProgressStatus');
+  const filesCard = document.getElementById('estimatorFilesCard');
+  const tableBody = document.getElementById('estimatorTableBody');
+
+  if (!progressCard || !tableBody) return;
+
+  estimatorFilesList = Array.from(files);
+  progressCard.style.display = 'block';
+  filesCard.style.display = 'none';
+  tableBody.innerHTML = '';
+
+  let totalWords = 0;
+  let totalTokens = 0;
+
+  const totalFiles = estimatorFilesList.length;
+
+  for (let i = 0; i < totalFiles; i++) {
+    const file = estimatorFilesList[i];
+    const indexStr = `${i + 1}/${totalFiles}`;
+    progressTitle.textContent = `Analyzing file: ${file.name}`;
+    progressRatio.textContent = indexStr;
+    progressFill.style.width = `${Math.round(((i) / totalFiles) * 100)}%`;
+    progressStatus.textContent = 'Extracting words locally...';
+
+    let wordsCount = 0;
+    let text = '';
+    const ext = file.name.split('.').pop().toLowerCase();
+
+    // Custom progress updater for estimator
+    const estProgressCallback = (pct, text) => {
+      progressStatus.textContent = `[File ${indexStr}] ${text}`;
+    };
+
+    try {
+      if (ext === 'pdf') {
+        text = await extractTextFromPdf(file, estProgressCallback);
+      } else if (isImageFile(file.name)) {
+        text = await runOcrOnFile(file, estProgressCallback);
+      } else {
+        text = file.name; // Fallback
+      }
+      
+      // Compute local word count
+      const cleanText = text.trim();
+      wordsCount = cleanText ? cleanText.split(/\s+/).length : 0;
+    } catch (err) {
+      console.error(`Error estimating tokens for ${file.name}:`, err);
+      // Rough fallback based on file size (1 KB ≈ 150 words)
+      wordsCount = Math.round(file.size / 1024 * 150);
+    }
+
+    // Heuristics tokens model: tokens = (words * 1.33) + 856 (prompt + json completion max size)
+    const estTokens = Math.round(wordsCount * 1.33) + 856;
+    totalWords += wordsCount;
+    totalTokens += estTokens;
+
+    // Append table row
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td><strong>${file.name}</strong></td>
+      <td><span class="file-type-badge">${ext.toUpperCase()}</span></td>
+      <td>${(file.size / 1024 / 1024).toFixed(2)} MB</td>
+      <td>${wordsCount.toLocaleString()}</td>
+      <td><span class="token-value">${estTokens.toLocaleString()}</span></td>
+      <td><span class="status-pill success">Ready</span></td>
+    `;
+    tableBody.appendChild(row);
+  }
+
+  // Update progress completion
+  progressFill.style.width = '100%';
+  setTimeout(() => {
+    progressCard.style.display = 'none';
+    filesCard.style.display = 'block';
+  }, 500);
+
+  // Update Summary values
+  document.getElementById('est-total-files').textContent = totalFiles;
+  document.getElementById('est-total-words').textContent = totalWords.toLocaleString();
+  document.getElementById('est-total-tokens').textContent = totalTokens.toLocaleString();
+
+  // Recommendations logic (Groq Limits)
+  const l8bStatus = document.getElementById('groq-llama-8b-pill');
+  const l70bStatus = document.getElementById('groq-llama-70b-pill');
+  const recommendedKeysCount = document.getElementById('recommendedKeysCount');
+
+  // Llama-3.1-8B-Instant limits: ~30,000 tokens/min
+  const l8bSafe = totalTokens < 30000;
+  l8bStatus.className = `recommendation-pill ${l8bSafe ? 'success' : 'warning'}`;
+  l8bStatus.querySelector('.pill-status').textContent = l8bSafe ? 'Safe' : 'Exceeds 30K TPM';
+
+  // Llama-3.3-70B limits: ~12,000 tokens/min
+  const l70bSafe = totalTokens < 12000;
+  l70bStatus.className = `recommendation-pill ${l70bSafe ? 'success' : 'warning'}`;
+  l70bStatus.querySelector('.pill-status').textContent = l70bSafe ? 'Safe' : 'Exceeds 12K TPM';
+
+  // Calculate recommended keys needed to process within a 1-minute window
+  const recommendedKeys = Math.ceil(totalTokens / 12000);
+  recommendedKeysCount.textContent = recommendedKeys;
+
+  // Update button state
+  document.getElementById('btnSendToPortal').disabled = false;
+}

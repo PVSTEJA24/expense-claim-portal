@@ -6,9 +6,9 @@
   <title>Expense Claim Statement Portal</title>
   <meta name="description" content="Fill and download your company expense claim statement as Excel"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
-  <script type="module" crossorigin src="./assets/index-_IN4heq3.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-GgFxHBLc.css">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <script type="module" crossorigin src="./assets/index-kQHKfsv4.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DA5WSlmj.css">
 </head>
 <body>
   <!-- Animated background blobs -->
@@ -17,8 +17,28 @@
   <div class="bg-blob blob3"></div>
 
   <div class="app-wrapper">
-    <!-- Header -->
-    <header class="app-header">
+    <!-- Top Navigation Bar -->
+    <nav class="top-nav">
+      <div class="nav-logo">
+        <span class="nav-logo-icon">🧾</span>
+        <span>Expense Portal</span>
+      </div>
+      <div class="nav-links">
+        <button class="nav-btn active" id="btn-page-portal" onclick="switchPage('portal')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Claim Statement
+        </button>
+        <button class="nav-btn" id="btn-page-estimator" onclick="switchPage('estimator')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+          Bulk Token Estimator
+        </button>
+      </div>
+    </nav>
+
+    <!-- Claim Statement Page View -->
+    <div id="page-portal" class="app-page active">
+      <!-- Header -->
+      <header class="app-header">
       <div class="header-logo">
         <div class="logo-icon">EXP</div>
         <div class="header-text">
@@ -41,7 +61,7 @@
           <p>
             This portal supports two parsing modes. 
             <strong>Local Offline Mode (No API Key Required):</strong> If your bills are named with the amount (e.g. <code>zomato_345.pdf</code> or <code>uber_120.png</code>), details are parsed instantly offline. 
-            <strong>Gemini AI Mode (API Key Required):</strong> If filenames are generic (e.g. <code>zomato.pdf</code> or <code>invoice.png</code>), a Gemini API Key is required to read the bill contents using Gemini AI.
+            <strong>Gemini AI Mode (API Key Required):</strong> If filenames are generic (e.g. <code>zomato.pdf</code> or <code>invoice.png</code>), you must enable both check boxes and a Gemini API Key is required to read the bill contents using Gemini AI.
           </p>
         </div>
       </div>
@@ -83,28 +103,33 @@
         </div>
         <div class="ai-grid">
           <div class="form-group">
-            <label for="geminiApiKey">Gemini API Key</label>
+            <label for="geminiApiKey" class="label-with-info">
+              AI API Key(s)
+              <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" class="info-icon-link" title="Click to get your Groq API Keys">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              </a>
+            </label>
             <div class="api-key-input-wrapper">
-              <input type="password" id="geminiApiKey" placeholder="AIZAy..." autocomplete="off"/>
+              <input type="password" id="geminiApiKey" placeholder="Paste single key OR multiple keys separated by commas/newlines..." autocomplete="off"/>
               <button type="button" id="toggleApiKeyVisibility" class="btn-toggle-visibility" title="Show/Hide API Key">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="eye-icon"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
             </div>
-            <p class="input-help-text">Only required if filenames don't contain amounts (e.g. <code>zomato.pdf</code>)</p>
+             <p class="input-help-text">Supports multiple keys. Detects <strong>Gemini</strong>, <strong>OpenAI</strong>, <strong>Claude</strong>, <strong>Groq</strong>, <strong>Cerebras</strong>, <strong>Hugging Face</strong>. Rotates keys on rate limit.</p>
             <button type="button" id="btnTestApiKey" class="btn-test-key">Test Connection</button>
           </div>
           <div class="form-group toggle-group">
             <label class="switch-container">
               <input type="checkbox" id="useAiParser" />
               <span class="switch-slider"></span>
-              <span class="switch-label">Enable Gemini AI Parser</span>
+              <span class="switch-label">Enable AI Parser</span>
             </label>
           </div>
           <div class="form-group toggle-group">
             <label class="switch-container">
               <input type="checkbox" id="alwaysUseAi" />
               <span class="switch-slider"></span>
-              <span class="switch-label">Always use AI (ignore filename amounts)</span>
+              <span class="switch-label">Always use AI</span>
             </label>
           </div>
         </div>
@@ -146,7 +171,7 @@
               </div>
               <div class="instruction-item">
                 <span class="icon">🤖</span>
-                <span>If filenames are generic (e.g., <code>zomato.pdf</code>), you must enable the <strong>Gemini API Key</strong> to read the bill contents.</span>
+                <span>If filenames are generic (e.g., <code>zomato.pdf</code>), you must enable both check boxes and a <strong>Gemini API Key</strong> is required to read the bill contents.</span>
               </div>
             </div>
           </div>
@@ -303,6 +328,124 @@
       </div>
     </div>
 
+    </div> <!-- Close page-portal -->
+
+    <!-- Token Estimator Page View -->
+    <div id="page-estimator" class="app-page">
+      <header class="app-header">
+        <div class="header-logo">
+          <div class="logo-icon font-estimator">EST</div>
+          <div class="header-text">
+            <h1>Bulk Token Estimator</h1>
+            <p>Upload all your bills locally to estimate total tokens and key requirements</p>
+          </div>
+        </div>
+      </header>
+
+      <div class="estimator-layout">
+        <div class="estimator-main">
+          <!-- Drop Zone -->
+          <div class="card drop-zone-card" id="estimatorDropZone">
+            <input type="file" id="estimatorFileInput" multiple style="display: none;" accept="image/*,application/pdf" />
+            <div class="drop-zone-content">
+              <div class="drop-zone-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              </div>
+              <h3>Select or Drag & Drop all your PDF/Image bills together</h3>
+              <p>Upload files together. They will be parsed 100% locally in your browser to count words.</p>
+              <button class="btn-primary" type="button" onclick="document.getElementById('estimatorFileInput').click()">Browse Files</button>
+            </div>
+          </div>
+
+          <!-- Progress Section -->
+          <div class="card progress-card" id="estimatorProgressCard" style="display: none;">
+            <div class="progress-header">
+              <h4 id="estimatorProgressTitle">Processing files...</h4>
+              <span id="estimatorProgressRatio">0/0</span>
+            </div>
+            <div class="ocr-progress-bar">
+              <div class="ocr-progress-fill" id="estimatorProgressFill" style="width: 0%"></div>
+            </div>
+            <p class="progress-status-text" id="estimatorProgressStatus">Extracting text locally...</p>
+          </div>
+
+          <!-- File List Card -->
+          <div class="card files-list-card" id="estimatorFilesCard" style="display: none;">
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              Uploaded Files Breakdown
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>File Name</th>
+                    <th>Type</th>
+                    <th>Size</th>
+                    <th>Est. Words</th>
+                    <th>Est. Tokens</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="estimatorTableBody">
+                  <!-- Dynamically populated files -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="estimator-sidebar">
+          <!-- Summary Card -->
+          <div class="card sidebar-summary-card">
+            <div class="card-title">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+              Estimation Summary
+            </div>
+            <div class="sidebar-grid">
+              <div class="sidebar-item">
+                <span class="sidebar-label">Total Files</span>
+                <span class="sidebar-value" id="est-total-files">0</span>
+              </div>
+              <div class="sidebar-item">
+                <span class="sidebar-label">Total Words</span>
+                <span class="sidebar-value" id="est-total-words">0</span>
+              </div>
+              <div class="sidebar-divider"></div>
+              <div class="sidebar-item total-tokens-row">
+                <span class="sidebar-label">Est. Total Tokens</span>
+                <span class="sidebar-value" id="est-total-tokens">0</span>
+              </div>
+              <div class="sidebar-divider"></div>
+              
+              <!-- Recommendations -->
+              <div class="sidebar-recommendations">
+                <h4>Groq Free Tier Feasibility</h4>
+                <div class="recommendation-pill success" id="groq-llama-8b-pill">
+                  Llama-3.1-8B: <span class="pill-status">Safe</span>
+                </div>
+                <div class="recommendation-pill success" id="groq-llama-70b-pill">
+                  Llama-3.3-70B: <span class="pill-status">Safe</span>
+                </div>
+                <div class="keys-needed-indicator" id="keysNeededIndicator">
+                  Recommended Keys: <strong id="recommendedKeysCount">0</strong>
+                </div>
+                <p class="keys-explanation">
+                  Free Groq keys have a limit of 12,000/14,400 tokens per minute. Providing more keys allows faster rotation.
+                </p>
+              </div>
+
+              <div class="sidebar-actions">
+                <button type="button" id="btnSendToPortal" class="btn-primary btn-full-width" disabled>
+                  Send Files to Portal for AI Parsing
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div> <!-- Close page-estimator -->
+
     <!-- OCR/PDF Scanning Loader Overlay -->
     <div class="ocr-overlay" id="ocrOverlay">
       <div class="ocr-loader-card">
@@ -322,14 +465,14 @@
         <div class="modal-icon-wrapper">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
         </div>
-        <h3>Gemini API Key Required</h3>
-        <p class="modal-desc">
+        <h3 id="apiKeyModalTitle">Gemini API Key Required</h3>
+        <p class="modal-desc" id="apiKeyModalDesc">
           The following file(s) require Gemini AI parsing because their filenames do not contain the amount (e.g., <code>zomato_345.pdf</code>):
         </p>
         <div class="modal-file-list" id="modalFileList">
           <!-- Dynamically populated files -->
         </div>
-        <p class="modal-instruction">
+        <p class="modal-instruction" id="apiKeyModalInstruction">
           Please enter your Gemini API Key below to proceed, or cancel to rename your files:
         </p>
         <div class="form-group modal-api-group">
