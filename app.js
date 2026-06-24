@@ -977,7 +977,7 @@ Return ONLY a valid JSON object with this exact format:
 ${BILL_PARSER_CRITICAL_INSTRUCTIONS}
 
 Bill text:
-${extractedText.substring(0, 4000)}`;
+${extractedText}`;
 
   const response = await fetchWithRetry('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -1066,7 +1066,7 @@ Return ONLY a valid JSON object with this exact format:
 ${BILL_PARSER_CRITICAL_INSTRUCTIONS}
 
 Bill text:
-${extractedText.substring(0, 3000)}`;
+${extractedText}`;
 
   const targetUrl = 'https://router.huggingface.co/v1/chat/completions';
   const proxyUrl = `https://proxy.corsfix.com/?url=${encodeURIComponent(targetUrl)}`;
@@ -1148,7 +1148,7 @@ Return ONLY a valid JSON object with this exact format:
 ${BILL_PARSER_CRITICAL_INSTRUCTIONS}
 
 Bill text:
-${extractedText.substring(0, 4000)}`;
+${extractedText}`;
 
   const response = await fetchWithRetry('https://api.cerebras.ai/v1/chat/completions', {
     method: 'POST',
@@ -1273,6 +1273,54 @@ ${BILL_PARSER_CRITICAL_INSTRUCTIONS}`;
     }
   } catch (e) {
     throw new Error(`Invalid JSON from OpenAI: ${e.message}`);
+  }
+
+  if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
+  let extractedDate = null;
+  if (parsed.date && /^\d{4}-\d{2}-\d{2}$/.test(parsed.date)) extractedDate = parsed.date;
+
+  return { description: parsed.description || 'Expense Bill', amount: parsed.amount, date: extractedDate };
+}
+
+async function parseTextWithOpenAI(extractedText, apiKey) {
+  const model = state.ai.model || 'gpt-4o';
+  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
+Return ONLY a valid JSON object with this exact format:
+{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
+
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}
+
+Bill text:
+${extractedText}`;
+
+  const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 512
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `OpenAI HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const rawText = data.choices?.[0]?.message?.content;
+  if (!rawText) {
+    throw new Error("No response content from OpenAI API");
+  }
+
+  const parsed = extractJsonFromString(rawText);
+  if (!parsed || typeof parsed.amount === 'undefined') {
+    throw new Error("Failed to extract valid bill data from OpenAI response");
   }
 
   if (typeof parsed.amount !== 'number') parsed.amount = parseFloat(parsed.amount) || 0;
@@ -1816,11 +1864,18 @@ async function handleFiles(files) {
               result = await parseFileWithGemini(base64Data, mimeType, activeKey);
 
             } else if (provider === 'openai') {
-              updateOcrProgress(20, `Sending file to OpenAI...`);
-              const base64Data = await fileToBase64(file);
               const mimeType = file.type || getMimeTypeFromExtension(file.name);
-              updateOcrProgress(50, `Parsing with OpenAI GPT-4o...`);
-              result = await parseFileWithOpenAI(base64Data, mimeType, file.name, activeKey);
+              if (mimeType === 'application/pdf') {
+                updateOcrProgress(20, `Extracting PDF text for OpenAI...`);
+                const extractedText = await extractTextFromPdf(file);
+                updateOcrProgress(50, `Parsing text with OpenAI GPT-4o...`);
+                result = await parseTextWithOpenAI(extractedText, activeKey);
+              } else {
+                updateOcrProgress(20, `Sending image to OpenAI...`);
+                const base64Data = await fileToBase64(file);
+                updateOcrProgress(50, `Parsing image with OpenAI GPT-4o...`);
+                result = await parseFileWithOpenAI(base64Data, mimeType, file.name, activeKey);
+              }
 
             } else if (provider === 'claude') {
               updateOcrProgress(20, `Sending file to Claude AI...`);
