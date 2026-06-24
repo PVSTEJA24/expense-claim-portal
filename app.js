@@ -815,6 +815,17 @@ function extractJsonFromString(str) {
   return repairJsonString(cleaned);
 }
 
+const BILL_PARSER_CRITICAL_INSTRUCTIONS = `CRITICAL INSTRUCTIONS FOR AMOUNT EXTRACTION (MULTIPLE TOTALS HANDLING):
+1. ALWAYS extract the final, absolute grand total paid or payable by the customer. Look for terms like: "Grand Total", "Total", "Net Payable", "Amount Paid", "Total Fare", "Total Amount", "Amount Payable", "Net Amount", "Total to pay", "Paid", "Total Due".
+2. If there are multiple totals mentioned in the bill:
+   - Do NOT extract the itemized subtotal (which excludes taxes, packaging, delivery charges, or platform fees). Always look for the final total that INCLUDES all fees, service charges, packaging, and taxes.
+   - Do NOT extract total tax values (e.g. CGST, SGST, IGST, VAT totals) or summary tax totals.
+   - If a discount, coupon, or credit is applied, extract the final post-discount Net Payable amount actually charged (e.g. if "Subtotal: 500", "Discount: 100", "Total Paid: 400" -> extract 400, not 500).
+   - If the bill contains cash breakdown (e.g. "Cash Paid: 1000", "Change: 200", "Total Bill: 800"), extract the actual "Total Bill" or "Net Payable" (800), not the cash paid or change returned.
+   - Do NOT extract "Previous Balance", "Outstanding Balance", "Due from Last Month", or "Advance Balance". Only extract the current transaction/billing cycle amount.
+3. Ignore quantities, phone numbers, invoice/receipt reference numbers, year numbers (e.g. 2026), and tax registration percentages/numbers when extracting the amount.
+4. Ensure the amount is returned as a number (float/double), not a string.`;
+
 // Parse raw file directly using Gemini AI API (multimodal)
 async function parseFileWithGemini(base64Data, mimeType, apiKey) {
   const model = state.ai.model || 'gemini-1.5-flash';
@@ -826,13 +837,7 @@ Analyze the attached document (PDF or image) and extract:
 2. "amount": The final total amount paid or payable (as a floating-point number, e.g. 345.00).
 3. "date": The transaction, bill, or invoice date (string, in YYYY-MM-DD format, e.g. "2026-06-18"). Search for billing date, invoice date, payment date, trip date. If no date is found or it's ambiguous, return null.
 
-CRITICAL INSTRUCTIONS FOR AMOUNT EXTRACTION:
-- You must find the absolute final grand total of the transaction. Look for terms like: "Grand Total", "Total Amount", "Net Payable", "Amount Paid", "Total", "Total Fare", "Amount Payable", "Net Amount", "Total to pay", "Paid".
-- If the bill contains an items subtotal (items bill) and additional charges like platform fee, delivery charge, handling fee, taxes, packaging, etc., the amount MUST be the COMBINATION of both (i.e. the final Grand Total including all these fees).
-- Do NOT pick the items subtotal if there is a platform fee or extra charges listed; you MUST extract the final grand total that combines both items subtotal + fees + taxes.
-- Only extract the items subtotal (items bill) if there are absolutely no platform fees, delivery fees, or extra charges listed in the document.
-- Do NOT extract quantities, year numbers (like 2026), invoice numbers, or phone numbers as the amount.
-- Ensure the amount is returned as a number (float), not a string.
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}
 
 Return ONLY a valid JSON object matching the schema below:
 {
@@ -969,6 +974,8 @@ async function parseTextWithGroq(extractedText, apiKey) {
 Return ONLY a valid JSON object with this exact format:
 {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
 
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}
+
 Bill text:
 ${extractedText.substring(0, 4000)}`;
 
@@ -1056,6 +1063,8 @@ async function parseTextWithHuggingFace(extractedText, apiKey) {
 Return ONLY a valid JSON object with this exact format:
 {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
 
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}
+
 Bill text:
 ${extractedText.substring(0, 3000)}`;
 
@@ -1136,6 +1145,8 @@ async function parseTextWithCerebras(extractedText, apiKey) {
 Return ONLY a valid JSON object with this exact format:
 {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
 
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}
+
 Bill text:
 ${extractedText.substring(0, 4000)}`;
 
@@ -1210,7 +1221,9 @@ async function testOpenAIApiKey(apiKey) {
 async function parseFileWithOpenAI(base64Data, mimeType, fileName, apiKey) {
   const model = state.ai.model || 'gpt-4o';
   const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor name from this bill.
-Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor name>"}`;
+Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor name>"}
+
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}`;
 
   // OpenAI vision supports images; PDFs need text extraction first
   const isImage = mimeType.startsWith('image/');
@@ -1302,7 +1315,9 @@ async function testClaudeApiKey(apiKey) {
 async function parseFileWithClaude(base64Data, mimeType, fileName, apiKey) {
   const model = state.ai.model || 'claude-3-5-haiku-20241022';
   const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor name from this bill.
-Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor name>"}`;
+Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor name>"}
+
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}`;
 
   const isImage = mimeType.startsWith('image/');
   const isPdf = mimeType === 'application/pdf';
