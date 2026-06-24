@@ -826,10 +826,44 @@ const BILL_PARSER_CRITICAL_INSTRUCTIONS = `CRITICAL INSTRUCTIONS FOR AMOUNT EXTR
 3. Ignore quantities, phone numbers, invoice/receipt reference numbers, year numbers (e.g. 2026), and tax registration percentages/numbers when extracting the amount.
 4. Ensure the amount is returned as a number (float/double), not a string.`;
 
+function buildTextPromptWithLocalHints(extractedText) {
+  const localHeuristics = parseOcrText(extractedText);
+  const localDate = localHeuristics.date || "Not found";
+  const localAmount = localHeuristics.amount || 0;
+  const localDesc = localHeuristics.description || "Not found";
+
+  return `You are an expense bill parser. Extract the total amount, date, and vendor/description from the bill text below.
+Return ONLY a valid JSON object matching this schema:
+{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
+
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}
+
+LOCAL HEURISTIC ESTIMATES (Use these as candidates to double-check):
+- Detected Vendor Clue: ${localDesc}
+- Detected Amount Clue: ₹${localAmount}
+- Detected Date Clue: ${localDate}
+
+Please thoroughly audit the full bill text below. Verify if the clues above are correct or need adjustment (e.g. if the amount clue is a subtotal instead of the grand total, or if there is a discount applied that reduces the final paid amount). Output the final audited values.
+
+Bill text:
+${extractedText}`;
+}
+
 // Parse raw file directly using Gemini AI API (multimodal)
-async function parseFileWithGemini(base64Data, mimeType, apiKey) {
+async function parseFileWithGemini(base64Data, mimeType, apiKey, localHints = null) {
   const model = state.ai.model || 'gemini-1.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  let hintsPrompt = '';
+  if (localHints) {
+    hintsPrompt = `
+LOCAL HEURISTIC ESTIMATES FROM PDF PARSER (Use these as candidates to double-check):
+- Detected Vendor Clue: ${localHints.description || 'Not found'}
+- Detected Amount Clue: ₹${localHints.amount || 0}
+- Detected Date Clue: ${localHints.date || 'Not found'}
+Please verify these candidates against the visual document and correct them if necessary.
+`;
+  }
 
   const prompt = `You are an expert financial auditor specialized in receipt and invoice parsing.
 Analyze the attached document (PDF or image) and extract:
@@ -838,6 +872,7 @@ Analyze the attached document (PDF or image) and extract:
 3. "date": The transaction, bill, or invoice date (string, in YYYY-MM-DD format, e.g. "2026-06-18"). Search for billing date, invoice date, payment date, trip date. If no date is found or it's ambiguous, return null.
 
 ${BILL_PARSER_CRITICAL_INSTRUCTIONS}
+${hintsPrompt}
 
 Return ONLY a valid JSON object matching the schema below:
 {
@@ -970,14 +1005,7 @@ async function testGroqApiKey(apiKey) {
 // Parse extracted text using Groq (text-only, no vision)
 async function parseTextWithGroq(extractedText, apiKey) {
   const model = state.ai.model || 'llama-3.1-8b-instant';
-  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
-Return ONLY a valid JSON object with this exact format:
-{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
-
-${BILL_PARSER_CRITICAL_INSTRUCTIONS}
-
-Bill text:
-${extractedText}`;
+  const prompt = buildTextPromptWithLocalHints(extractedText);
 
   const response = await fetchWithRetry('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -1059,14 +1087,7 @@ async function testHuggingFaceApiKey(apiKey) {
 
 async function parseTextWithHuggingFace(extractedText, apiKey) {
   const model = state.ai.model || 'Qwen/Qwen2.5-7B-Instruct';
-  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
-Return ONLY a valid JSON object with this exact format:
-{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
-
-${BILL_PARSER_CRITICAL_INSTRUCTIONS}
-
-Bill text:
-${extractedText}`;
+  const prompt = buildTextPromptWithLocalHints(extractedText);
 
   const targetUrl = 'https://router.huggingface.co/v1/chat/completions';
   const proxyUrl = `https://proxy.corsfix.com/?url=${encodeURIComponent(targetUrl)}`;
@@ -1141,14 +1162,7 @@ async function testCerebrasApiKey(apiKey) {
 
 async function parseTextWithCerebras(extractedText, apiKey) {
   const model = state.ai.model || 'llama-3.3-70b';
-  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
-Return ONLY a valid JSON object with this exact format:
-{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
-
-${BILL_PARSER_CRITICAL_INSTRUCTIONS}
-
-Bill text:
-${extractedText}`;
+  const prompt = buildTextPromptWithLocalHints(extractedText);
 
   const response = await fetchWithRetry('https://api.cerebras.ai/v1/chat/completions', {
     method: 'POST',
@@ -1284,14 +1298,7 @@ ${BILL_PARSER_CRITICAL_INSTRUCTIONS}`;
 
 async function parseTextWithOpenAI(extractedText, apiKey) {
   const model = state.ai.model || 'gpt-4o';
-  const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor/description from the following bill text.
-Return ONLY a valid JSON object with this exact format:
-{"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor or expense name>"}
-
-${BILL_PARSER_CRITICAL_INSTRUCTIONS}
-
-Bill text:
-${extractedText}`;
+  const prompt = buildTextPromptWithLocalHints(extractedText);
 
   const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -1360,12 +1367,25 @@ async function testClaudeApiKey(apiKey) {
   return model;
 }
 
-async function parseFileWithClaude(base64Data, mimeType, fileName, apiKey) {
+async function parseFileWithClaude(base64Data, mimeType, fileName, apiKey, localHints = null) {
   const model = state.ai.model || 'claude-3-5-haiku-20241022';
+
+  let hintsPrompt = '';
+  if (localHints) {
+    hintsPrompt = `
+LOCAL HEURISTIC ESTIMATES FROM PDF PARSER (Use these as candidates to double-check):
+- Detected Vendor Clue: ${localHints.description || 'Not found'}
+- Detected Amount Clue: ₹${localHints.amount || 0}
+- Detected Date Clue: ${localHints.date || 'Not found'}
+Please verify these candidates against the visual document and correct them if necessary.
+`;
+  }
+
   const prompt = `You are an expense bill parser. Extract the total amount, date, and vendor name from this bill.
 Return ONLY valid JSON: {"amount": <number>, "date": "<YYYY-MM-DD or null>", "description": "<vendor name>"}
 
-${BILL_PARSER_CRITICAL_INSTRUCTIONS}`;
+${BILL_PARSER_CRITICAL_INSTRUCTIONS}
+${hintsPrompt}`;
 
   const isImage = mimeType.startsWith('image/');
   const isPdf = mimeType === 'application/pdf';
@@ -1857,11 +1877,20 @@ async function handleFiles(files) {
           const provider = detectProvider(activeKey);
           try {
             if (provider === 'gemini') {
+              const mimeType = file.type || getMimeTypeFromExtension(file.name);
+              let localHints = null;
+              if (mimeType === 'application/pdf') {
+                try {
+                  const txt = await extractTextFromPdf(file);
+                  localHints = parseOcrText(txt);
+                } catch (e) {
+                  console.warn("Local PDF extraction failed for clues:", e);
+                }
+              }
               updateOcrProgress(20, `Sending file to Gemini AI...`);
               const base64Data = await fileToBase64(file);
-              const mimeType = file.type || getMimeTypeFromExtension(file.name);
               updateOcrProgress(50, `Parsing with Gemini AI...`);
-              result = await parseFileWithGemini(base64Data, mimeType, activeKey);
+              result = await parseFileWithGemini(base64Data, mimeType, activeKey, localHints);
 
             } else if (provider === 'openai') {
               const mimeType = file.type || getMimeTypeFromExtension(file.name);
@@ -1878,11 +1907,20 @@ async function handleFiles(files) {
               }
 
             } else if (provider === 'claude') {
+              const mimeType = file.type || getMimeTypeFromExtension(file.name);
+              let localHints = null;
+              if (mimeType === 'application/pdf') {
+                try {
+                  const txt = await extractTextFromPdf(file);
+                  localHints = parseOcrText(txt);
+                } catch (e) {
+                  console.warn("Local PDF extraction failed for clues:", e);
+                }
+              }
               updateOcrProgress(20, `Sending file to Claude AI...`);
               const base64Data = await fileToBase64(file);
-              const mimeType = file.type || getMimeTypeFromExtension(file.name);
               updateOcrProgress(50, `Parsing with Claude AI...`);
-              result = await parseFileWithClaude(base64Data, mimeType, file.name, activeKey);
+              result = await parseFileWithClaude(base64Data, mimeType, file.name, activeKey, localHints);
 
             } else if (provider === 'groq') {
               // Groq is text-only: extract text first, then send to Groq
